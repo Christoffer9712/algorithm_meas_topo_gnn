@@ -20,31 +20,12 @@ class PredictorDataset(Dataset):
         except TypeError:
             # Older PyTorch versions don't support the keyword; fall back.
             data = torch.load(path)
-        self.history = data if isinstance(data, list) else data['history']
+        self.nbrdata_setsdata_sets = len(data)
+        self.data = data
 
     def __len__(self):
-        return len(self.history)
+        return len(self.data[0]['history'])
 
-    def __getitem__(self, idx):
-        s = self.history[idx]
+    def __getitem__(self, gidx, idx):
+        s = self.data[gidx][idx]
         return(s)
-        # horizon_m is optional (defaults to 0)
-        #horizon = s.get('horizon_m', 0)
-        '''return (
-            torch.tensor(s['graph'], dtype=torch.float32),
-            torch.tensor(s['h_hists'], dtype=torch.float32),
-            torch.tensor(s['meas_vals'], dtype=torch.float32),
-            torch.tensor(s['elapsed'], dtype=torch.float32),
-            torch.tensor(s['label'], dtype=torch.float32),
-        )
-        '''
-        '''
-        return (
-                    torch.tensor(s['h_pred'], dtype=torch.float32),
-                    torch.tensor(s['h_hists'], dtype=torch.float32),
-                    torch.tensor(s['meas_vals'], dtype=torch.float32),
-                    torch.tensor(s['elapsed'], dtype=torch.float32),
-                    torch.tensor(s['label'], dtype=torch.float32),
-                #    torch.tensor(horizon, dtype=torch.float32),
-                )
-        '''

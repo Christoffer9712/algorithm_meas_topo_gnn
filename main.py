@@ -1,8 +1,7 @@
-import environment
-import network
+import environment.environment as environment
+import environment.network as network
 import os
-import pathEncoder
-import scheduler as scheduler_module
+import algorithm.predictor.path_encoder as path_encoder
 
 # Build the routing environment and the joint encoder/scheduler.
 # RUN_MODE selects which chain to run:
@@ -12,22 +11,28 @@ import scheduler as scheduler_module
 RUN_MODE = 'train_predictor'  # change to 'train_predictor' or 'predictor_only' as needed
 
 env = environment.RoutingEnvironment(seed=42, queue_seed=1, dt=1.0)
-encoder = pathEncoder.GraphEncoder(
-    pathEncoder.GATv2Encoder(in_dim=8, hidden_dim=64, out_dim=64, edge_dim=1),
+encoder = path_encoder.GraphEncoder(
+    path_encoder.GATv2Encoder(in_dim=8, hidden_dim=64, out_dim=64, edge_dim=1),
     device='cpu',
 )
-sched = scheduler_module.Scheduler()
 
 if RUN_MODE == 'train_predictor':
     # Generate dataset and train predictor models
-    from trainer.generate_dataset import generate
+    from environment.generate_dataset import generate
     from trainer.train_predictor import train
 
-    dataset_path = generate(T=400, seed=1, device='cpu')
-    model_path = train(dataset_path, epochs=40, batch_size=1, device='cpu')
+    re_calculate_data = False
+    if re_calculate_data:
+        dataset_path = generate(T=2000, seeds=(1,2)) #TMP - reduce sim-length?
+    else:
+        dataset_path = os.path.join(os.path.dirname(__file__), 'data', 'predictor_dataset.pt')
+        dataset_path = os.path.abspath(dataset_path)
+
+    model_path = train(dataset_path)
     print('Training complete. Models saved to', model_path)
     raise SystemExit(0)
 
+'''
 snapshots, times = [], []
 prev_flow_map = {}
 optimal_prev_flow_map = {}
@@ -40,7 +45,7 @@ if RUN_MODE == 'predictor_only':
     if not os.path.exists(model_file):
         raise RuntimeError('Model file not found: ' + model_file)
     model_dict = torch.load(model_file, map_location='cpu')
-    from meas_predictor import MeasurementEmbedder, Predictor
+    from algorithm.meas_predictor import MeasurementEmbedder, Predictor
     # infer dimensions from encoder
     dummy_H = env.snapshot()
     overlays = env.get_overlays()
@@ -101,7 +106,7 @@ if RUN_MODE == 'full':
         raise RuntimeError('Model file not found: ' + model_file + '. Please run with RUN_MODE=\'train_predictor\' first to produce models.')
 
     ckpt = torch.load(model_file, map_location='cpu')
-    from meas_predictor import MeasurementEmbedder, Predictor
+    from algorithm.meas_predictor import MeasurementEmbedder, Predictor
 
     # infer sizes
     dummy_H = env.snapshot()
@@ -287,3 +292,4 @@ x_lim = (-x_bound, x_bound)
 y_lim = (-y_bound, y_bound)
 network.plot_grid(env.net, times=times, x_lim=x_lim, y_lim=y_lim)
 
+'''
