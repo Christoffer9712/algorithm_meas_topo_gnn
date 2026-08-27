@@ -28,7 +28,7 @@ class GATv2Encoder(nn.Module):
         edge_dim=1,
         heads=2,
         n_layers=3,
-        dropout=0,
+        dropout=0.1,
         residual=True,
         share_weights=False,
     ):

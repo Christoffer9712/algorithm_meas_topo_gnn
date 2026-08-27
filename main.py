@@ -1,7 +1,7 @@
-import environment.environment as environment
-import environment.network as network
 import os
 import algorithm.predictor.path_encoder as path_encoder
+from environment.network import LayeredOrbitNetwork
+import numpy as np
 
 # Build the routing environment and the joint encoder/scheduler.
 # RUN_MODE selects which chain to run:
@@ -10,20 +10,41 @@ import algorithm.predictor.path_encoder as path_encoder
 #   'train_predictor' : generate dataset and train the measurement/predictor models
 RUN_MODE = 'train_predictor'  # change to 'train_predictor' or 'predictor_only' as needed
 
-env = environment.RoutingEnvironment(seed=42, queue_seed=1, dt=1.0)
+#env = environment.RoutingEnvironment(seed=42, queue_seed=1, dt=1.0)
 encoder = path_encoder.GraphEncoder(
     path_encoder.GATv2Encoder(in_dim=8, hidden_dim=64, out_dim=64, edge_dim=1),
     device='cpu',
 )
 
+
+
 if RUN_MODE == 'train_predictor':
     # Generate dataset and train predictor models
-    from environment.generate_dataset import generate
+    from environment.generate_dataset import generate, generate_nets
     from trainer.train_predictor import train
 
-    re_calculate_data = False
+    re_calculate_data = True
     if re_calculate_data:
-        dataset_path = generate(T=2000, seeds=(1,2)) #TMP - reduce sim-length?
+        T = 200
+        seeds = range(40)
+        nets = generate_nets(seeds)
+        for idx in range(len(nets)):
+            print(
+                f'net-{idx} has '
+                f'sats_per_ring = {nets[idx].sats_per_ring}, '
+                f'n_rings = {nets[idx].n_rings}, '
+                f'n_gateways = {nets[idx].n_gateways}, '
+                f'n_targets = {nets[idx].n_targets}, '
+                f'ring_radii = {nets[idx].ring_radii}, '
+                f'ring_speeds = {nets[idx].ring_speeds}, '
+                f'orbit_center = {nets[idx].orbit_center}, '
+                f'aircraft_pos = {nets[idx].aircraft_pos}, '
+                f'range_limit = {nets[idx].range_limit}'
+            )
+            print('-----------------------------')
+
+        dataset_path= generate(T=T, seeds=seeds, nets=nets)
+
     else:
         dataset_path = os.path.join(os.path.dirname(__file__), 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)

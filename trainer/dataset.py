@@ -24,8 +24,11 @@ class PredictorDataset(Dataset):
         self.data = data
 
     def __len__(self):
-        return len(self.data[0]['history'])
+        return len(self.data['history_list'][0]) #This is the length of one simulation
 
-    def __getitem__(self, gidx, idx):
-        s = self.data[gidx][idx]
+    def __getitem__(self, gidx):
+        s = self.data['history_list'][gidx] #Returns one simulation
         return(s)
+
+    def get_nbr_of_sims(self):
+            return len(self.data['history_list'])

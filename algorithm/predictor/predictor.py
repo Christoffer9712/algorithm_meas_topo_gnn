@@ -7,7 +7,7 @@ class Predictor(nn.Module):
     MLP mapping H = [h || g || horizon_m] -> predicted (lambda, delay_ms).
     """
 
-    def __init__(self, in_dim, hidden_dim=128, dropout=0):
+    def __init__(self, in_dim, hidden_dim=128, dropout=0.1):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),

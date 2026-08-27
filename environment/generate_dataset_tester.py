@@ -1,9 +1,11 @@
-from .generate_dataset import generate
+from .generate_dataset import generate, generate_nets
 import os
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from .environment import RoutingEnvironment
+from .network import LayeredOrbitNetwork
+
 
 def plot_overlay_delays_loss(data, overlay_ids=None, max_overlays=6):
     if overlay_ids is None:
@@ -55,27 +57,37 @@ dataset_path = os.path.abspath(dataset_path)
 print(f'Data set is stored at path {dataset_path}')
 
 T = 400
-generate(dataset_path, T, seeds=(42,43))
+seeds = (42,43)
+nets = generate_nets(seeds)
+for idx in range(len(nets)):
+    print(
+        f'net-{idx} has '
+        f'sats_per_ring = {nets[idx].sats_per_ring}, '
+        f'n_rings = {nets[idx].n_rings}, '
+        f'n_gateways = {nets[idx].n_gateways}, '
+        f'n_targets = {nets[idx].n_targets}, '
+        f'ring_radii = {nets[idx].ring_radii}, '
+        f'ring_speeds = {nets[idx].ring_speeds}, '
+        f'orbit_center = {nets[idx].orbit_center}, '
+        f'aircraft_pos = {nets[idx].aircraft_pos}, '
+        f'range_limit = {nets[idx].range_limit}'
+    )
+    print('-----------------------------')
+generate(dataset_path, T, seeds=seeds, nets=nets)
 
 try:
-    print('before')
     data = torch.load(dataset_path, weights_only=False)
-    print('after')
 except TypeError:
     # Older PyTorch versions don't support the keyword; fall back.
     data = torch.load(dataset_path)
     print('type_error')
 
-print('Before printing')
-print(f'len(data)={len(data)}')
-print(f'data.keys()={data.keys()}')
-print('after Printing')
-env = RoutingEnvironment()
-snapshots = []
-delay_queue_vs_path = {}
-
-for gidx in range(len(data)):
+snapshots_list = []
+for gidx in range(len(data['history_list'])):
     print(f'gidx={gidx}')
+    env = RoutingEnvironment(net=nets[gidx])
+    snapshots = []
+    delay_queue_vs_path = {}
     for tstep in range(T):
         snapshots.append(env.snapshot_at_time_t(tstep))
         #print(f'data[history_list][gidx] = {data['history_list'][gidx]}')
@@ -99,20 +111,21 @@ for gidx in range(len(data)):
             delay_queue_vs_path[oid]['meas_delay'].append((meas[2], meas[3]))
             delay_queue_vs_path[oid]['meas_loss'].append(meas[1])
         
-
-ovl_ids = list(delay_queue_vs_path.keys())
-plot_overlay_delays_loss(delay_queue_vs_path, overlay_ids=ovl_ids[0:10], max_overlays=6)
-plot_overlay_delays_loss(delay_queue_vs_path, overlay_ids=ovl_ids[-2:], max_overlays=6)
+    snapshots_list.append(snapshots)
+    ovl_ids = list(delay_queue_vs_path.keys())
+    plot_overlay_delays_loss(delay_queue_vs_path, overlay_ids=ovl_ids[0:10], max_overlays=6)
+    plot_overlay_delays_loss(delay_queue_vs_path, overlay_ids=ovl_ids[-2:], max_overlays=6)
 
 # Optional: animate queue states across snapshots
 if True:
     try:
         import environment.network as netmod
-        save_path = os.path.join(os.path.dirname(dataset_path), '..', 'outputs', 'sim_animation.gif')
-        save_path = os.path.abspath(save_path)
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        print(f"Animating {len(snapshots)} frames, saving to {save_path} (attr={'queue_delay'})")
-        anim = netmod.animate_queue_states(snapshots, attr='queue_delay', interval=80, save_path=save_path, show=False)
-        print('Animation saved to', save_path)
+        for idx in range(len(snapshots_list)):
+            save_path = os.path.join(os.path.dirname(dataset_path), '..', 'outputs',f'sim_animation_{idx}.gif')
+            save_path = os.path.abspath(save_path)
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            print(f"Animating {len(snapshots_list[idx])} frames, saving to {save_path} (attr={'queue_delay'})")
+            anim = netmod.animate_queue_states(snapshots_list[idx], attr='queue_delay', interval=80, save_path=save_path, show=False)
+            print(f'Animation nr. {idx} saved to', save_path)
     except Exception as e:
         print('Failed to create animation:', e)

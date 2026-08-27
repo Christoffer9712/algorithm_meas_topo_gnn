@@ -19,7 +19,7 @@ from environment.environment import RoutingEnvironment
 
 INCLUDE_MEAS = False
 
-def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, device='cpu', min_delta=1e-4, patience=15):
+def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4, device='cpu', min_delta=1e-4, patience=10):
     if dataset_path is None:
         dataset_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)
@@ -29,7 +29,7 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
     os.makedirs(model_dir, exist_ok=True)
 
     
-    env = RoutingEnvironment()
+    #env = RoutingEnvironment()
     dataset = PredictorDataset(dataset_path)
     
     encoder = GATv2Encoder(in_dim=8, hidden_dim=128, out_dim=64, edge_dim=1).to(device)
@@ -47,6 +47,8 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
     c_lambda = 1.0
     c_delta = 5.0
 
+    nbr_sims = dataset.get_nbr_of_sims()
+
     # Prediction horizon: M
     M = 1 # NOTE!!!
 
@@ -57,18 +59,20 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
     lo, hi = Delta - 1, len(dataset) - M
     all_t = list(range(lo, hi))
     n = len(all_t)
-    train_t = all_t[: int(0.70 * n)]
-    val_t   = all_t[int(0.70 * n) : int(0.85 * n)]
-    test_t  = all_t[int(0.85 * n) :]
+    #train_t = all_t[: int(0.70 * n)]
+    #val_t   = all_t[int(0.70 * n) : int(0.85 * n)]
+    #test_t  = all_t[int(0.85 * n) :]
+    train_t = val_t = test_t = all_t #OBS, use all data when validation is done on different simulation
 
     meas_delay = []
     meas_loss = []
-    for t in train_t:
-        curr_overlay = dataset[0,t]['overlay_paths']
-        for ovl in curr_overlay:
-            ovl_meas = ovl['meas']
-            meas_delay.append(ovl_meas[0])
-            meas_loss.append(ovl_meas[1])
+    for gidx in range(nbr_sims-1): #OBS -1
+        for t in train_t:
+            curr_overlay = dataset[gidx][t]['overlay_paths']
+            for ovl in curr_overlay:
+                ovl_meas = ovl['meas']
+                meas_delay.append(ovl_meas[0])
+                meas_loss.append(ovl_meas[1])
 
     # Calculate mean
     mean_loss = statistics.mean(meas_loss)
@@ -84,19 +88,19 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
     std_dev_delay = statistics.stdev(meas_delay)
     print(f"Standard Deviation of the delay is {std_dev_delay}")
 
-    print(f"Baseline (predict-mean) train = {baseline_loss_mean(train_t, dataset, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):.4f}")
-    print(f"Baseline (predict-mean) val   = {baseline_loss_mean(val_t, dataset, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):.4f}")
-    print(f"Baseline (predict-mean) test  = {baseline_loss_mean(test_t, dataset, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):.4f}")
+    print(f"Baseline (predict-mean) train = {baseline_loss_mean(train_t, dataset, 0, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):.4f}")
+    print(f"Baseline (predict-mean) val   = {baseline_loss_mean(val_t, dataset, 0, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):.4f}")
+    print(f"Baseline (predict-mean) test  = {baseline_loss_mean(test_t, dataset, 0, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):.4f}")
 
 
-    def run_t(t, dataset):
-        curr_overlay = dataset[t]['overlay_paths']
+    def run_t(t, gidx, dataset):
+        curr_overlay = dataset[gidx][t]['overlay_paths']
         H_hist = []
         Meas_hist = []
         Elapsed = []
         if INCLUDE_MEAS:
             for i in range(0, Delta):
-                d = dataset[t - i]
+                d = dataset[gidx][t - i]
                 #G = env.snapshot_at_time_t(t-i)
                 data = Data(x=d['x'], edge_index=d['edge_index'], edge_attr=d['edge_attr'], node_names=d['node_names'], name_to_idx=d['name_to_idx'])            
                 hist_overlay = d['overlay_paths']
@@ -113,7 +117,7 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
         loss = torch.zeros((), device=device)
         count = 0
         for m in range(1, M+1):
-            d = dataset[t + m]
+            d = dataset[gidx][t + m]
             #G = env.snapshot_at_time_t(t+m)
             # Using overlays from time t since it's unknown what future overlays will exist
             data = Data(x=d['x'], edge_index=d['edge_index'], edge_attr=d['edge_attr'], node_names=d['node_names'], name_to_idx=d['name_to_idx'])            
@@ -139,6 +143,9 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
                     pass #(ToDO later)
         return loss, count
 
+    
+    batch_size = batch_size/(nbr_sims-1) #For each step, train over all sims
+
     best_val = float('inf')
     best_state = None
     epochs_no_improve = 0
@@ -149,7 +156,12 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
         batch_sample = 1
         loss_batch = 0.0
         for t in train_t:
-            loss, count = run_t(t, dataset)
+            loss = torch.zeros((), device=device); count = 0
+            for gidx in range(nbr_sims-1): #OBS! leaving 1 sim out for validation
+                loss_gidx, count_gidx = run_t(t, gidx, dataset) #Start with gidx == 0
+                loss = loss + loss_gidx
+                count = count + count_gidx
+
             if count == 0:
                 continue
             step_loss = loss / count
@@ -164,18 +176,25 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
             else:
                 batch_sample = batch_sample + 1
 
-        train_loss = train_loss/len(train_t)
+        train_loss = train_loss/(len(train_t)) #OBS!!!
 
         # ---- validate ----
         encoder.eval(); embedder.eval(); predictor.eval()
         val_loss = 0.0
         with torch.no_grad():
             for t in val_t:
-                loss, count = run_t(t, dataset)
+                loss = torch.zeros((), device=device); count = 0
+                for gidx in range(1): #range(nbr_sims): #OBS! leaving 1 sim out for validation
+                    loss_gidx, count_gidx = run_t(t, nbr_sims-1, dataset) #validating using unseen topology (last one)
+                    loss = loss + loss_gidx
+                    count = count + count_gidx
+
                 if count == 0:
                     continue
+   
                 val_loss += float((loss / count).detach())
-        val_loss = val_loss/len(val_t)
+            
+            val_loss = val_loss/(len(val_t)) #OBS!!!
 
         scheduler.step(val_loss) # This reduces lr if the learning stalls
         # ---- early stopping ----
@@ -202,16 +221,19 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
         predictor.load_state_dict(best_state['predictor_state'])
 
     # ---- test (once, after training) ----
+    '''
     encoder.eval(); embedder.eval(); predictor.eval()
     test_loss = 0.0
     with torch.no_grad():
         for t in test_t:
-            loss, count = run_t(t, dataset)
-            if count == 0:
-                continue
-            test_loss += float((loss / count).detach())
-    test_loss = test_loss/len(test_t)
+            for gidx in range(nbr_sims):
+                loss, count = run_t(t, gidx, dataset)
+                if count == 0:
+                    continue
+                test_loss += float((loss / count).detach())
+    test_loss = test_loss/(len(test_t))
     print(f"Test loss = {test_loss}")
+    '''
 
     # Save models
     torch.save({'encoder_state': encoder.state_dict(), 'embedder_state': embedder.state_dict(), 'predictor_state': predictor.state_dict(),
@@ -220,13 +242,13 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=8, lr=5e-4, 
     print('Saved trained models to', os.path.join(model_dir, 'predictor_models.pth'))
     return os.path.join(model_dir, 'predictor_models.pth')
 
-def baseline_loss_mean(split_t, dataset, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):
+def baseline_loss_mean(split_t, dataset, gidx, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):
     total, n_t = 0.0, 0
     for t in split_t:
-        curr_overlay = dataset[t]['overlay_paths']
+        curr_overlay = dataset[gidx][t]['overlay_paths']
         loss, count = 0.0, 0
         for m in range(1, M + 1):
-            d = dataset[t + m]
+            d = dataset[gidx][t + m]
             for ovl in curr_overlay:
                 ovl_id = ovl['id']
                 tgt = next((path['meas'] for path in d['overlay_paths'] if path['id'] == ovl_id), None)

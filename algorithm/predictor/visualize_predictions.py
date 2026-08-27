@@ -79,11 +79,12 @@ if not os.path.exists(model_path):
 
 # Load dataset
 dataset = PredictorDataset(dataset_path)
-N = min(200, len(dataset))
+N = min(400, len(dataset))
 print(f'Loading {N} samples from dataset (total {len(dataset)})')
 
-samples = [dataset[i] for i in range(N)]
-
+gidx = 19 #OBS!
+samples = [dataset[gidx][i] for i in range(N)]
+print(f'Sample len = {len(samples)}')
 
 # Build models and load checkpoint
 embedder = torch.zeros(64, device='cpu') #MeasurementEmbedder(h_dim=, hidden_dim=128, out_dim=64)
