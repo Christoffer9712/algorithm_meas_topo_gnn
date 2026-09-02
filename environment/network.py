@@ -110,15 +110,25 @@ class LayeredOrbitNetwork:
                 pos[n] = d["static_pos"]
         return pos
 
-    def offsets_at(self, t):
+    def pos_to_ac(self, t):
         """{node: (dx, dy)} relative to the aircraft — the GAT node features."""
         pos = self.positions_at(t)
         ax, ay = pos["AC-0"]
         return {n: (x - ax, y - ay) for n, (x, y) in pos.items()}
 
-    def ranges_at(self, t):
+    def pos_to_tgt(self, t):
+            """{node: (dx, dy)} relative to the aircraft — the GAT node features."""
+            pos = self.positions_at(t)
+            ax, ay = pos["TGT-0"]
+            return {n: (x - ax, y - ay) for n, (x, y) in pos.items()}
+
+    def dist_to_ac(self, t):
         """Slant range from the aircraft to every node."""
-        return {n: math.hypot(dx, dy) for n, (dx, dy) in self.offsets_at(t).items()}
+        return {n: math.hypot(dx, dy) for n, (dx, dy) in self.pos_to_ac(t).items()}
+
+    def dist_to_tgt(self, t):
+        """Slant range from the aircraft to every node."""
+        return {n: math.hypot(dx, dy) for n, (dx, dy) in self.pos_to_tgt(t).items()}
 
     # ------------------------------------------------------------------ edges
 
@@ -135,13 +145,15 @@ class LayeredOrbitNetwork:
         features; `pos` is absolute, for drawing.
         """
         pos = self.positions_at(t)
-        off = self.offsets_at(t)
-        rng_ = self.ranges_at(t)
+        pos_to_ac = self.pos_to_ac(t)
+        #pos_to_tgt_ = self.pos_to_tgt(t)
+        dist_to_ac = self.dist_to_ac(t)
+        dist_to_tgt = self.dist_to_tgt(t)
 
         H = nx.Graph()
         for n, d in self.G.nodes(data=True):
             attrs = {k: v for k, v in d.items() if k != "static_pos"}
-            H.add_node(n, **attrs, offset=off[n], range=rng_[n], pos=pos[n], t=t)
+            H.add_node(n, **attrs, pos_to_ac=pos_to_ac[n], in_overlay = 0, t=t)
 
         nodes = list(self.G.nodes(data=True))
         for i, (u, du) in enumerate(nodes):
@@ -155,6 +167,7 @@ class LayeredOrbitNetwork:
 
     # --------------------------------------------------------- feature export
 
+    '''
     def node_features(self, t):
         """{node: (dx, dy, range, type_index)} in the aircraft frame."""
         types = ["Aircraft", "Satellite", "Gateway", "Target"]
@@ -163,7 +176,18 @@ class LayeredOrbitNetwork:
             n: (off[n][0], off[n][1], rng_[n], types.index(d["node_type"]))
             for n, d in self.G.nodes(data=True)
         }
-
+    '''
+    def node_features(self, t):
+        """{node: (dx, dy, range, type_index)} in the aircraft frame."""
+        types = ["Aircraft", "Satellite", "Gateway", "Target", "Virtual"]
+        pos_to_ac = self.pos_to_ac(t)
+        dist_to_ac = self.dist_to_ac(t)
+        dist_to_tgt = self.dist_to_tgt(t)
+        
+        return {
+            n: (pos_to_ac[n][0], pos_to_ac[n][1], types.index(d["node_type"]), 0) 
+            for n, d in self.G.nodes(data=True)
+        } # Last 0 is is_overlay
     # ------------------------------------------------------- path enumeration
 
     def underlay_paths(self, t, max_paths=None):

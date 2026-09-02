@@ -10,23 +10,26 @@ import numpy as np
 #   'train_predictor' : generate dataset and train the measurement/predictor models
 RUN_MODE = 'train_predictor'  # change to 'train_predictor' or 'predictor_only' as needed
 
-#env = environment.RoutingEnvironment(seed=42, queue_seed=1, dt=1.0)
-encoder = path_encoder.GraphEncoder(
-    path_encoder.GATv2Encoder(in_dim=8, hidden_dim=64, out_dim=64, edge_dim=1),
-    device='cpu',
-)
-
 
 
 if RUN_MODE == 'train_predictor':
     # Generate dataset and train predictor models
     from environment.generate_dataset import generate, generate_nets
-    from trainer.train_predictor import train
+    markov = True
+    if markov:
+        from trainer.train_markov_predictor import train
+    else: 
+        from trainer.train_predictor import train
+        #env = environment.RoutingEnvironment(seed=42, queue_seed=1, dt=1.0)
+        encoder = path_encoder.GraphEncoder(
+            path_encoder.GATv2Encoder(in_dim=8, hidden_dim=64, out_dim=64, edge_dim=1),
+            device='cpu',
+        )
 
-    re_calculate_data = True
+    re_calculate_data = False
     if re_calculate_data:
         T = 200
-        seeds = range(40)
+        seeds = range(2)
         nets = generate_nets(seeds)
         for idx in range(len(nets)):
             print(
@@ -43,7 +46,7 @@ if RUN_MODE == 'train_predictor':
             )
             print('-----------------------------')
 
-        dataset_path= generate(T=T, seeds=seeds, nets=nets)
+        dataset_path = generate(T=T, seeds=seeds, nets=nets)
 
     else:
         dataset_path = os.path.join(os.path.dirname(__file__), 'data', 'predictor_dataset.pt')

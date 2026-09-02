@@ -82,7 +82,7 @@ class GATv2Encoder(nn.Module):
 
 def snapshot_to_pyg(
     H,
-    node_attrs=("offset", "range"),      # which attrs to keep
+    node_attrs=("pos_to_ac", "in_overlay"),      # which attrs to keep
     edge_attrs=("distance",),
     include_type_onehot=True,
     pos_scale=300.0,                     # normalisation constants
@@ -104,10 +104,10 @@ def snapshot_to_pyg(
         feat = []
         for a in node_attrs:
             v = d[a]
-            if a == "offset":                     # (dx, dy) tuple
+            if a == "pos_to_ac":                     # (dx, dy) tuple
                 feat.extend([v[0] / pos_scale, v[1] / pos_scale])
-            elif a == "range":
-                feat.append(v / pos_scale)
+            elif a == "in_overlay":
+                feat.append(0)
             elif isinstance(v, (tuple, list, np.ndarray)):
                 feat.extend(np.asarray(v, dtype=float).ravel())
             else:
