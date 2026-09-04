@@ -13,6 +13,7 @@ from trainer.dataset import PredictorDataset
 from algorithm.predictor.meas_predictor import MeasurementEmbedder
 from algorithm.predictor.predictor import Predictor
 from algorithm.predictor.path_encoder import GATv2Encoder, GraphEncoder
+from algorithm.predictor.hetero_encoder import HeteroGATv2Encoder
 
 from torch_geometric.data import Data
 import networkx as nx
@@ -82,14 +83,14 @@ dataset = PredictorDataset(dataset_path)
 N = min(400, len(dataset))
 print(f'Loading {N} samples from dataset (total {len(dataset)})')
 
-gidx = 19 #OBS!
+gidx = 1 #OBS!
 samples = [dataset[gidx][i] for i in range(N)]
 print(f'Sample len = {len(samples)}')
 
 # Build models and load checkpoint
 embedder = torch.zeros(64, device='cpu') #MeasurementEmbedder(h_dim=, hidden_dim=128, out_dim=64)
 predictor = Predictor(in_dim=64 + 64 + 1, hidden_dim=128)
-encoder = GATv2Encoder(in_dim=8, hidden_dim=128, out_dim=64, edge_dim=1)
+encoder = HeteroGATv2Encoder(node_in=8, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3)
 ckpt = torch.load(model_path, map_location='cpu')
 
 if 'embedder_state' in ckpt and 'predictor_state' in ckpt and 'encoder_state' in ckpt:

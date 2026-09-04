@@ -23,10 +23,10 @@ if RUN_MODE == 'train_predictor':
     from environment.generate_dataset import generate, generate_nets
     from trainer.train_predictor import train
 
-    re_calculate_data = True
+    re_calculate_data = False
     if re_calculate_data:
         T = 200
-        seeds = range(40)
+        seeds = range(20)
         nets = generate_nets(seeds)
         for idx in range(len(nets)):
             print(
