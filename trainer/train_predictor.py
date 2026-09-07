@@ -35,16 +35,16 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
     
     #encoder = GATv2Encoder(in_dim=8, hidden_dim=128, out_dim=64, edge_dim=1).to(device)
     
-    encoder = HeteroGATv2Encoder(node_in=9, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3, dropout=0.1)
+    encoder = HeteroGATv2Encoder(node_in=9, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3, dropout=0.02)
     graph_encoder = GraphEncoder(encoder, device=device)
 
     embedder = MeasurementEmbedder(h_dim=64, hidden_dim=128, out_dim=64).to(device)
     # Predictor input: h_topo (D) + g (64) + horizon_m (1)
-    predictor = Predictor(in_dim=64 + 64 + 1, hidden_dim=128, dropout=0.1).to(device) # Input is H = [topo_embed || meas_embed || m]
+    predictor = Predictor(in_dim=64 + 64 + 1, hidden_dim=128, dropout=0.02).to(device) # Input is H = [topo_embed || meas_embed || m]
 
     opt = torch.optim.Adam(list(encoder.parameters()) + list(embedder.parameters()) + list(predictor.parameters()), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, mode='min', factor=0.5, patience=8
+        opt, mode='min', factor=0.5, patience=5
     )
     # Loss weights: c_lambda, c_delta
     c_lambda = 1.0
@@ -63,8 +63,8 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
     all_t = list(range(lo, hi))
     n = len(all_t)
     train_t = all_t[: int(0.70 * n)]
-    val_t   = all_t[int(0.70 * n) : int(0.85 * n)]
-    test_t  = all_t[int(0.85 * n) :]
+    val_t   = all_t[int(0.70 * n) :] # OBS!!! made this to be larger!!!
+    test_t  = all_t[int(0.85 * n) :] # Currently not really in use
     #train_t = val_t = test_t = all_t #OBS, use all data when validation is done on different simulation
 
     meas_delay = []
@@ -226,7 +226,17 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
                 print(f"Early stopping at epoch {ep} (best val_loss = {best_val:.6f})")
                 break
 
-        print(f"Epoch: {ep} - train_loss = {train_loss} - val_loss = {val_loss} - lr = {opt.param_groups[0]["lr"]}")
+        msg = f"""
+              Epoch: {ep}
+              train_loss = {train_loss}
+              val_loss   = {val_loss}
+              lr         = {opt.param_groups[0]["lr"]}
+              encoder    = {next(encoder.parameters()).device}
+              embedder   = {next(embedder.parameters()).device}
+              predictor  = {next(predictor.parameters()).device}
+              """
+
+        print(msg)
 
     # restore best weights before test + save
     if best_state is not None:
