@@ -173,7 +173,7 @@ def _add_overlay_nodes_pyg(data, overlays, virtual_type="Virtual", device="cpu")
             dst_node += [tgt]
 
     hetero = HeteroData()
-    hetero['node'].x = x
+    hetero['node'].x = x.to(device)
     hetero['virtual'].x = torch.tensor(virtual, dtype=torch.float32, device=device)
 
     hetero['node', 'n-v', 'virtual'].edge_index = torch.tensor((src_node, dst_virtual), dtype=torch.long, device=device)

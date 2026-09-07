@@ -35,7 +35,7 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
     
     #encoder = GATv2Encoder(in_dim=8, hidden_dim=128, out_dim=64, edge_dim=1).to(device)
     
-    encoder = HeteroGATv2Encoder(node_in=9, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3, dropout=0.02)
+    encoder = HeteroGATv2Encoder(node_in=9, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3, dropout=0.02).to(device)
     graph_encoder = GraphEncoder(encoder, device=device)
 
     embedder = MeasurementEmbedder(h_dim=64, hidden_dim=128, out_dim=64).to(device)
@@ -102,6 +102,7 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
         H_hist = []
         Meas_hist = []
         Elapsed = []
+        '''
         if INCLUDE_MEAS:
             for i in range(0, Delta):
                 d = dataset[gidx][t - i]
@@ -117,7 +118,7 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
             H_hist = torch.stack(H_hist)
             Meas_hist = torch.stack(Meas_hist)
             Elapsed = torch.tensor(Elapsed, device=device).unsqueeze(1)
-
+        '''
         loss = torch.zeros((), device=device)
         count = 0
         for m in range(1, M+1):

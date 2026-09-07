@@ -149,8 +149,8 @@ class HeteroGATv2Encoder(nn.Module):
                     out.setdefault(dst, []).append(res)     # collect messages by destination
                     layer_attn[rel] = (ei_out.detach().cpu(), alpha.detach().cpu())
 
-                if l == 0:
-                    plot_attention(x_dict['node'], layer_attn[("node", "n-n", "node")][0], layer_attn[("node", "n-n", "node")][1], ("node", "n-n", "node"), ovl_path=ovl_path, ep=ep)
+                #if l == 0:
+                #    plot_attention(x_dict['node'], layer_attn[("node", "n-n", "node")][0], layer_attn[("node", "n-n", "node")][1], ("node", "n-n", "node"), ovl_path=ovl_path, ep=ep)
                 x = {k: torch.stack(v).sum(0) for k, v in out.items()}
                 attn_per_layer.append(layer_attn)
             
