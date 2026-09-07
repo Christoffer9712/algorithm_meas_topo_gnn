@@ -111,12 +111,12 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
                 h_hist = graph_encoder.encode_overlays_pyg(data, hist_overlay, return_attention)
                 for ovl in hist_overlay:
                     H_hist.append(h_hist[ovl['id']])
-                    Meas_hist.append(torch.tensor(ovl['meas'], dtype=torch.float))
+                    Meas_hist.append(torch.tensor(ovl['meas'], dtype=torch.float, device=device))
                     Elapsed.append(float(i))
 
             H_hist = torch.stack(H_hist)
             Meas_hist = torch.stack(Meas_hist)
-            Elapsed = torch.tensor(Elapsed).unsqueeze(1)
+            Elapsed = torch.tensor(Elapsed, device=device).unsqueeze(1)
 
         loss = torch.zeros((), device=device)
         count = 0
@@ -138,9 +138,9 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
                         g = embedder(h_topo[ovl_id], H_hist, Meas_hist, Elapsed)
                     else:
                         g = torch.zeros(64, device=device)
-                    H = torch.cat([h_topo[ovl_id], g, torch.tensor([float(m)])], dim=0).unsqueeze(0)
+                    H = torch.cat([h_topo[ovl_id], g, torch.tensor([float(m)], dtype=torch.float, device=device)], dim=0).unsqueeze(0)
                     out = predictor(H)
-                    tgt = torch.tensor(f_ovl['meas'], dtype=torch.float)
+                    tgt = torch.tensor(f_ovl['meas'], dtype=torch.float, device=device)
 
                     z0 = out[0,0] - (tgt[0]-mean_delay)/(std_dev_delay+1e-8)
                     z1 = out[0,1] - (tgt[1]-mean_loss)/(std_dev_loss+1e-8)
@@ -226,7 +226,7 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
                 print(f"Early stopping at epoch {ep} (best val_loss = {best_val:.6f})")
                 break
 
-        print(f"Epoch: {ep} - train_loss = {train_loss} - val_loss = {val_loss}")
+        print(f"Epoch: {ep} - train_loss = {train_loss} - val_loss = {val_loss} - lr = {opt.param_groups[0]["lr"]}")
 
     # restore best weights before test + save
     if best_state is not None:

@@ -137,8 +137,7 @@ def snapshot_to_pyg(
         edge_attr = torch.tensor(eattr, dtype=torch.float32, device=device)
     else:
         edge_index = torch.empty((2, 0), dtype=torch.long, device=device)
-        edge_attr = torch.empty((0, len(edge_attrs)), dtype=torch.float32,
-                                device=device)
+        edge_attr = torch.empty((0, len(edge_attrs)), dtype=torch.float32, device=device)
 
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
     data.node_names = nodes          # keep the mapping for later lookup
@@ -177,9 +176,9 @@ def _add_overlay_nodes_pyg(data, overlays, virtual_type="Virtual", device="cpu")
     hetero['node'].x = x
     hetero['virtual'].x = torch.tensor(virtual, dtype=torch.float32, device=device)
 
-    hetero['node', 'n-v', 'virtual'].edge_index = torch.tensor((src_node, dst_virtual), dtype=torch.long)
+    hetero['node', 'n-v', 'virtual'].edge_index = torch.tensor((src_node, dst_virtual), dtype=torch.long, device=device)
 
-    hetero['virtual', 'v-n', 'node'].edge_index = torch.tensor((src_virtual, dst_node), dtype=torch.long)
+    hetero['virtual', 'v-n', 'node'].edge_index = torch.tensor((src_virtual, dst_node), dtype=torch.long, device=device)
 
     #hetero['node', 'n-v-rev', 'virtual'].edge_index = (dst_virtual, src_node)
     #hetero['node', 'n-v-rev', 'virtual'].edge_attr = [-1]*len(dst_virtual)

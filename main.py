@@ -9,11 +9,11 @@ import numpy as np
 #   'predictor_only'  : run predictor inference on environment snapshots (requires trained models)
 #   'train_predictor' : generate dataset and train the measurement/predictor models
 RUN_MODE = 'train_predictor'  # change to 'train_predictor' or 'predictor_only' as needed
-
+DEVICE = 'cpu'
 #env = environment.RoutingEnvironment(seed=42, queue_seed=1, dt=1.0)
 encoder = path_encoder.GraphEncoder(
     path_encoder.GATv2Encoder(in_dim=8, hidden_dim=64, out_dim=64, edge_dim=1),
-    device='cpu',
+    device=DEVICE,
 )
 
 
@@ -49,7 +49,7 @@ if RUN_MODE == 'train_predictor':
         dataset_path = os.path.join(os.path.dirname(__file__), 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)
 
-    model_path = train(dataset_path)
+    model_path = train(dataset_path, device=DEVICE)
     print('Training complete. Models saved to', model_path)
     raise SystemExit(0)
 
