@@ -20,7 +20,7 @@ from environment.environment import RoutingEnvironment
 
 INCLUDE_MEAS = False
 
-def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4, device='cpu', min_delta=1e-4, patience=15):
+def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=1e-3, device='cpu', min_delta=1e-4, patience=15):
     if dataset_path is None:
         dataset_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)
@@ -96,8 +96,8 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
     print(f"Baseline (predict-mean) test  = {baseline_loss_mean(test_t, dataset, 0, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):.4f}")
 
 
-    def run_t(t, gidx, dataset, return_attention, ep):
-        curr_overlay = dataset[gidx][t]['overlay_paths']
+    def run_t(t, gidx, data, return_attention, ep):
+        curr_overlay = data[(gidx,t)]['overlay_paths']
         curr_overlay_ids = [ovl['id'] for ovl in curr_overlay]
         H_hist = []
         Meas_hist = []
@@ -122,11 +122,50 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
         loss = torch.zeros((), device=device)
         count = 0
         for m in range(1, M+1):
-            d = dataset[gidx][t + m]
-            #G = env.snapshot_at_time_t(t+m)
-            # Using overlays from time t since it's unknown what future overlays will exist
-            data = Data(x=d['x'], edge_index=d['edge_index'], edge_attr=d['edge_attr'], node_names=d['node_names'], name_to_idx=d['name_to_idx'])            
-            fut_overlay = d['overlay_paths']
+            #d = dataset[gidx][t + m]
+            #data = Data(x=d['x'], edge_index=d['edge_index'], edge_attr=d['edge_attr'], node_names=d['node_names'], name_to_idx=d['name_to_idx'])            
+            fut_overlay = data[(gidx, t + m)]['overlay_paths']
+
+            # overlays we actually train on this step
+            eligible = [f_ovl for f_ovl in fut_overlay
+                        if f_ovl['id'] in curr_overlay_ids]
+            if not eligible:
+                continue
+
+            # --- attention plotting path: unchanged, single-graph, one overlay ---
+            if return_attention:
+                first = eligible[0]
+                h_first = graph_encoder.encode_overlays_pyg(
+                    data[(gidx, t+m)], [first], return_attention=True, ep=ep)
+                return_attention = False   # only plot one overlay
+                h_topo = {first['id']: h_first[first['id']]}
+                # encode the rest in one batched launch
+                rest = eligible[1:]
+                if rest:
+                    h_topo.update(graph_encoder.encode_overlays_pyg_batched(data[(gidx, t+m)], rest))
+            else:
+                # --- normal path: one batched forward for all eligible overlays ---
+                h_topo = graph_encoder.encode_overlays_pyg_batched(data[(gidx, t+m)], eligible)
+
+            # --- heads + loss: per overlay, identical to before ---
+            for f_ovl in eligible:
+                ovl_id = f_ovl['id']
+                if INCLUDE_MEAS:
+                    g = embedder(h_topo[ovl_id], H_hist, Meas_hist, Elapsed)
+                else:
+                    g = torch.zeros(64, device=device)
+                H = torch.cat([h_topo[ovl_id], g,
+                               torch.tensor([float(m)], dtype=torch.float, device=device)],
+                              dim=0).unsqueeze(0)
+                out = predictor(H)
+                tgt = torch.tensor(f_ovl['meas'], dtype=torch.float, device=device)
+
+                z0 = out[0,0] - (tgt[0]-mean_delay)/(std_dev_delay+1e-8)
+                z1 = out[0,1] - (tgt[1]-mean_loss)/(std_dev_loss+1e-8)
+
+                loss = loss + (c_delta * z0**2 + c_lambda * z1**2)
+                count += 1
+            '''    
             for f_ovl in fut_overlay:
                 if f_ovl['id'] in curr_overlay_ids:
                     if return_attention:
@@ -150,6 +189,7 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
                     count += 1
                 else:
                     pass
+            '''
         return loss, count
 
     
@@ -158,6 +198,15 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
     best_val = float('inf')
     best_state = None
     epochs_no_improve = 0
+
+    data = {}
+    for gidx in range(nbr_sims):
+        for t in range(len(dataset)):
+            d = dataset[gidx][t]
+            tmp = Data(x=d['x'], edge_index=d['edge_index'], edge_attr=d['edge_attr'], node_names=d['node_names'], name_to_idx=d['name_to_idx'], overlay_paths=d['overlay_paths']).to(device)
+            data[(gidx, t)] = tmp
+            
+    
     for ep in range(epochs):
         # ---- train ----
         encoder.train(); embedder.train(); predictor.train()
@@ -170,10 +219,10 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
                 if ep%10 == 0 and gidx == 0 and t == 0: # This is only to visualise the attention
                     encoder.eval(); embedder.eval(); predictor.eval()
                     with torch.no_grad():
-                        loss_gidx, count_gidx = run_t(t, gidx, dataset, return_attention=True, ep=ep) #Start with gidx == 0
+                        loss_gidx, count_gidx = run_t(t, gidx, data, return_attention=True, ep=ep) #Start with gidx == 0
                     encoder.train(); embedder.train(); predictor.train()
                 else:
-                    loss_gidx, count_gidx = run_t(t, gidx, dataset, return_attention=False, ep=ep)
+                    loss_gidx, count_gidx = run_t(t, gidx, data, return_attention=False, ep=ep)
                 loss = loss + loss_gidx
                 count = count + count_gidx
 
@@ -200,7 +249,7 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=5e-4,
             for t in val_t:
                 loss = torch.zeros((), device=device); count = 0
                 for gidx in range(nbr_sims): #range(1): #OBS! leaving 1 sim out for validation
-                    loss_gidx, count_gidx = run_t(t, gidx, dataset, return_attention=False, ep=ep) #run_t(t, nbr_sims-1, dataset) #validating using unseen topology (last one)
+                    loss_gidx, count_gidx = run_t(t, gidx, data, return_attention=False, ep=ep) #run_t(t, nbr_sims-1, dataset) #validating using unseen topology (last one)
                     loss = loss + loss_gidx
                     count = count + count_gidx
 
