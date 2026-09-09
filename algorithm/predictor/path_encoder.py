@@ -166,7 +166,7 @@ def _add_overlay_nodes_pyg(data, overlays):
         name_to_idx[f"OVL-{i}"] = ovl_idx
         node_names.append(f"OVL-{i}")
         virtual.append([overlay_dist(data, overlay['overlay_path'])])
-        for node in overlay["overlay_path"]: #REMEMBER, WAS A MISSTAKE EARLIER
+        for node in overlay["overlay_path"]:
             tgt = name_to_idx[node]
             src_virtual += [ovl_idx]
             src_node += [tgt]

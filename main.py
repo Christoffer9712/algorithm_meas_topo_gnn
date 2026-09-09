@@ -11,10 +11,10 @@ import numpy as np
 RUN_MODE = 'train_predictor'  # change to 'train_predictor' or 'predictor_only' as needed
 DEVICE = 'cpu'
 #env = environment.RoutingEnvironment(seed=42, queue_seed=1, dt=1.0)
-encoder = path_encoder.GraphEncoder(
-    path_encoder.GATv2Encoder(in_dim=8, hidden_dim=64, out_dim=64, edge_dim=1),
-    device=DEVICE,
-)
+#encoder = path_encoder.GraphEncoder(
+#    path_encoder.GATv2Encoder(in_dim=8, hidden_dim=64, out_dim=64, edge_dim=1),
+#    device=DEVICE,
+#)
 
 
 
@@ -43,7 +43,7 @@ if RUN_MODE == 'train_predictor':
             )
             print('-----------------------------')
 
-        dataset_path= generate(T=T, seeds=seeds, nets=nets)
+        dataset_path = generate(T=T, seeds=seeds, nets=nets)
 
     else:
         dataset_path = os.path.join(os.path.dirname(__file__), 'data', 'predictor_dataset.pt')
