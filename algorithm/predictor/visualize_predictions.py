@@ -83,14 +83,17 @@ dataset = PredictorDataset(dataset_path)
 N = min(400, len(dataset))
 print(f'Loading {N} samples from dataset (total {len(dataset)})')
 
-gidx = 1 #OBS!
+gidx = 13 #OBS!
 samples = [dataset[gidx][i] for i in range(N)]
 print(f'Sample len = {len(samples)}')
 
 # Build models and load checkpoint
-embedder = torch.zeros(64, device='cpu') #MeasurementEmbedder(h_dim=, hidden_dim=128, out_dim=64)
-predictor = Predictor(in_dim=64 + 64 + 1, hidden_dim=128)
-encoder = HeteroGATv2Encoder(node_in=8, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3)
+encoder = HeteroGATv2Encoder(node_in=10, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3, dropout=0.0)
+graph_encoder = GraphEncoder(encoder)
+
+embedder = g = torch.zeros(64) #MeasurementEmbedder(h_dim=64, hidden_dim=128, out_dim=64)
+# Predictor input: h_topo (D) + g (64) + horizon_m (1)
+predictor = Predictor(in_dim=64 + 64 + 1, hidden_dim=128, dropout=0.0)
 ckpt = torch.load(model_path, map_location='cpu')
 
 if 'embedder_state' in ckpt and 'predictor_state' in ckpt and 'encoder_state' in ckpt:
@@ -116,9 +119,10 @@ with torch.no_grad():
     for d in samples:
         data = Data(x=d['x'], edge_index=d['edge_index'], edge_attr=d['edge_attr'], node_names=d['node_names'], name_to_idx=d['name_to_idx'])
         ovls = d['overlay_paths']
-        ovls_encodings = graph_encoder.encode_overlays_pyg(data, ovls)
-        horizon = 1
         for ovl in ovls:
+            ovls_encodings = graph_encoder.encode_overlays_pyg(data, [ovl])
+            horizon = 1
+
             h_topo = ovls_encodings[ovl['id']]
             H = torch.cat([h_topo, embedder, torch.tensor([horizon], dtype=torch.float32)], dim=0).unsqueeze(0)
             out = predictor(H).squeeze(0).numpy()

@@ -8,6 +8,7 @@ import numpy as np
 from torch_geometric.utils import to_networkx
 from torch_geometric.data import HeteroData
 from torch_geometric.data import Batch
+import re
 
 NODE_TYPES = ["Aircraft", "Satellite", "Gateway", "Target", "Virtual"]
 _TYPE_IDX = {t: i for i, t in enumerate(NODE_TYPES)}
@@ -204,6 +205,34 @@ def _add_underlay_path_feature(graph, overlays):
     assert len(overlays) == 1, "single-overlay only"
     path = overlays[0]["overlay_path"]
     n_nodes = graph['node'].x.size(0)
+    extra_feature = torch.full((n_nodes, 2), -1.0,
+                    dtype=graph['node'].x.dtype,
+                    device=graph['node'].x.device)
+    map_dict = {'AC': (0,1), 'SA': (1,2), 'GW': (2,3), 'TG': (3,3)}
+
+    for node in graph.name_to_idx:
+        idx = graph.name_to_idx[node]
+        node_type = node[0:2]
+        if node_type == "OV":
+            continue
+        (ovl_src, ovl_dest) = map_dict[node_type]
+
+        pos = graph['node'].x[idx][0:2]
+        ovl_src_pos = graph['node'].x[graph.name_to_idx[path[ovl_src]]][0:2]
+        ovl_dest_pos = graph['node'].x[graph.name_to_idx[path[ovl_dest]]][0:2]
+   
+        dist_to_src = torch.norm(ovl_src_pos - pos)
+        dist_to_dest = torch.norm(ovl_dest_pos - pos)
+        extra_feature[idx, 0] = dist_to_src
+        extra_feature[idx, 1] = dist_to_dest
+
+    graph['node'].x = torch.cat([graph['node'].x, extra_feature], dim=1)
+
+    return graph
+    """
+    assert len(overlays) == 1, "single-overlay only"
+    path = overlays[0]["overlay_path"]
+    n_nodes = graph['node'].x.size(0)
 
     # position feature, -1 sentinel for off-path nodes
     pos = torch.full((n_nodes, 1), -1.0,
@@ -217,6 +246,7 @@ def _add_underlay_path_feature(graph, overlays):
     # build a NEW tensor rather than editing the shared/cached one
     graph['node'].x = torch.cat([graph['node'].x, pos], dim=1)
     return graph
+    """
 
 class GraphEncoder:
     def __init__(self, encoder, device="cpu"):
@@ -254,7 +284,7 @@ class GraphEncoder:
     def encode_overlays_pyg(self, data, overlays, return_attention=False, ep=None):
         graph = _add_overlay_nodes_pyg(data, overlays)
         graph = _add_underlay_path_feature(graph, overlays) #This only works if overlay is a single path
-        #graph = graph.to(self.device)
+        graph = graph.to(self.device)
         encoding = self.encoder.forward(
             graph.x_dict, graph.edge_index_dict, graph.edge_attr_dict, return_attention, [data.name_to_idx[name] for name in overlays[0]['overlay_path']], ep=ep
         )
@@ -279,7 +309,7 @@ class GraphEncoder:
         graphs = []
         for overlay in overlays:
             g = _add_overlay_nodes_pyg(data, [overlay])  # still single-overlay
-            g = _add_underlay_path_feature(g, [overlay])                     # assert len==1 still holds
+            g = _add_underlay_path_feature(g, [overlay]) # assert len==1 still holds
             graphs.append(g.to(self.device))
 
         # Disjoint batch: no edges between sub-graphs, so overlay i's virtual

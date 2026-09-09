@@ -14,6 +14,7 @@ from torch_geometric.utils import softmax
 import matplotlib.pyplot as plt
 import networkx as nx
 import matplotlib as mpl
+import numpy as np
 
 RELATIONS = [
     ("node", "n-v", "virtual"),
@@ -26,6 +27,18 @@ RELATIONS = [
 def plot_attention(node_x, edge_index, alpha, relation_name,
                    node_names=None, ovl_path=None,
                    drop_self_loops=True, max_edges=None, ep=None):
+    """
+    Plot per-head attention over the n-n graph, and overlay the
+    constraint-respecting shortest path as a dotted line.
+
+    ovl_path must be the ORDERED list of overlay node indices. The shortest
+    path is built segment by segment: for each consecutive pair of overlay
+    nodes we route the shortest path between them and concatenate.
+
+    Edge cost = geometric (Euclidean) distance between the two nodes'
+    coordinates, taken from the first two columns of node_x. Routing uses
+    only the n-n edges present in edge_index.
+    """
     ei = edge_index.numpy()
     a = alpha.numpy()
 
@@ -37,9 +50,38 @@ def plot_attention(node_x, edge_index, alpha, relation_name,
     pos = {i: (float(coords[i, 0]), float(coords[i, 1]))
            for i in range(coords.shape[0])}
 
-    overlay_nodes = set(ovl_path or [])
+    overlay_order = list(ovl_path or [])          # keep the ORDER
+    overlay_nodes = set(overlay_order)            # for colouring only
     H = a.shape[1]
     cmap = plt.cm.viridis
+
+    def geometric_distance(u, v):
+        return float(np.linalg.norm(coords[u] - coords[v]))
+
+    # ---- routing graph: n-n edges, cost = geometric distance -------------
+    routing_graph = nx.Graph()
+    routing_graph.add_nodes_from(range(coords.shape[0]))
+    for k in range(ei.shape[1]):
+        u, v = int(ei[0, k]), int(ei[1, k])
+        routing_graph.add_edge(u, v, cost=geometric_distance(u, v))
+
+    # ---- shortest path across the ordered overlay nodes ------------------
+    def constrained_shortest_path():
+        """Concatenate shortest segments between consecutive overlay nodes.
+        Returns a list of node indices, or None if a segment is unreachable."""
+        if len(overlay_order) < 2:
+            return None
+        full = [overlay_order[0]]
+        for src, dst in zip(overlay_order[:-1], overlay_order[1:]):
+            try:
+                seg = nx.shortest_path(routing_graph, src, dst, weight="cost")
+            except nx.NetworkXNoPath:
+                return None
+            full.extend(seg[1:])          # drop the repeated segment start
+        return full
+
+    sp_nodes = constrained_shortest_path()
+    sp_edges = list(zip(sp_nodes[:-1], sp_nodes[1:])) if sp_nodes else []
 
     fig, axes = plt.subplots(1, H, figsize=(6 * H, 5))
     if H == 1:
@@ -68,22 +110,31 @@ def plot_attention(node_x, edge_index, alpha, relation_name,
                                node_color=node_colors)
         nx.draw_networkx_edges(
             G, pos, ax=ax, edge_color=weights, edge_cmap=cmap,
-            edge_vmin=0.0, edge_vmax=vmax,
-            width=[2 + 4 * x for x in weights], arrows=True)
+            edge_vmin=0.0, edge_vmax=vmax, connectionstyle="arc3,rad=0.1",
+            width=[2 + 4 * x for x in weights], arrows=True, alpha=0.8)
+
+        # ---- shortest path as a dotted overlay ---------------------------
+        if sp_edges:
+            nx.draw_networkx_edges(
+                G, pos, ax=ax, edgelist=sp_edges,
+                edge_color="crimson", style="dotted",
+                width=2.5, arrows=False)
+
         lbl = {i: (node_names[i] if node_names else i) for i in G.nodes()}
         nx.draw_networkx_labels(G, pos, ax=ax, labels=lbl, font_size=7)
         ax.set_title(f"{relation_name} — head {h}")
         ax.set_aspect("equal")
         ax.axis("on")
 
-        # colorbar: maps edge color -> attention weight
         sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
         sm.set_array([])
         cbar = fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label("attention weight")
 
     plt.tight_layout()
-    plt.savefig(f"//wsl.localhost/Ubuntu-22.04/home/chris/algorithm_test_v2/outputs/attention_ep{ep}.png", dpi=300, bbox_inches="tight")
+    plt.savefig(f"//wsl.localhost/Ubuntu-22.04/home/chris/algorithm_test_v2/outputs/attention_ep{ep}.png",
+                dpi=300, bbox_inches="tight")
+    print(f"Saved Fig attention_ep{ep} in //wsl.localhost/Ubuntu-22.04/home/chris/algorithm_test_v2/outputs/attention_ep{ep}.png")
     return fig
 
 class HeteroGATv2Encoder(nn.Module):
@@ -108,14 +159,14 @@ class HeteroGATv2Encoder(nn.Module):
             conv = HeteroConv(
                 {
                     ("node", "n-v", "virtual"): GATv2Conv(d_in, per_head, heads=heads, edge_dim=None,
-                                concat=not last, add_self_loops=False,
-                                dropout=dropout),
+                                                concat=not last, add_self_loops=False, dropout=dropout, 
+                                                share_weights=False, residual=True),
                     ("virtual", "v-n", "node"): GATv2Conv(d_in, per_head, heads=heads, edge_dim=None,
-                                concat=not last, add_self_loops=False,
-                                dropout=dropout),
+                                                concat=not last, add_self_loops=False, dropout=dropout,
+                                                share_weights=False, residual=True),
                     ("node", "n-n", "node"): GATv2Conv(d_in, per_head, heads=heads, edge_dim=1,
-                                                    concat=not last, add_self_loops=True,
-                                                    dropout=dropout)
+                                                concat=not last, add_self_loops=False, dropout=dropout, 
+                                                share_weights=False, residual=True)
                 },
                 aggr="sum",
             )
@@ -131,7 +182,7 @@ class HeteroGATv2Encoder(nn.Module):
         attn_per_layer = []
         for l in range(self.n_layers):
             last = l == self.n_layers - 1
-            if not return_attention:
+            if not return_attention or l != 0: # only plot for one neighbour hop
                 x = self.convs[l](x, edge_index_dict, edge_attr_dict=edge_attr_dict)
             else:
                 conv_dict = self.convs[l].convs            # sub-convs, keyed by relation
@@ -149,8 +200,8 @@ class HeteroGATv2Encoder(nn.Module):
                     out.setdefault(dst, []).append(res)     # collect messages by destination
                     layer_attn[rel] = (ei_out.detach().cpu(), alpha.detach().cpu())
 
-                #if l == 0:
-                #    plot_attention(x_dict['node'], layer_attn[("node", "n-n", "node")][0], layer_attn[("node", "n-n", "node")][1], ("node", "n-n", "node"), ovl_path=ovl_path, ep=ep)
+                
+                plot_attention(x_dict['node'], layer_attn[("node", "n-n", "node")][0], layer_attn[("node", "n-n", "node")][1], ("node", "n-n", "node"), ovl_path=ovl_path, ep=ep, max_edges=60)
                 x = {k: torch.stack(v).sum(0) for k, v in out.items()}
                 attn_per_layer.append(layer_attn)
             

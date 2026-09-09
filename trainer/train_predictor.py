@@ -35,16 +35,16 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=1e-3,
     
     #encoder = GATv2Encoder(in_dim=8, hidden_dim=128, out_dim=64, edge_dim=1).to(device)
     
-    encoder = HeteroGATv2Encoder(node_in=9, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3, dropout=0.02).to(device)
+    encoder = HeteroGATv2Encoder(node_in=10, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3, dropout=0.0).to(device)
     graph_encoder = GraphEncoder(encoder, device=device)
 
     embedder = MeasurementEmbedder(h_dim=64, hidden_dim=128, out_dim=64).to(device)
     # Predictor input: h_topo (D) + g (64) + horizon_m (1)
-    predictor = Predictor(in_dim=64 + 64 + 1, hidden_dim=128, dropout=0.02).to(device) # Input is H = [topo_embed || meas_embed || m]
+    predictor = Predictor(in_dim=64 + 64 + 1, hidden_dim=128, dropout=0.0).to(device) # Input is H = [topo_embed || meas_embed || m]
 
     opt = torch.optim.Adam(list(encoder.parameters()) + list(embedder.parameters()) + list(predictor.parameters()), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, mode='min', factor=0.5, patience=5
+        opt, mode='min', factor=0.75, patience=3
     )
     # Loss weights: c_lambda, c_delta
     c_lambda = 1.0
