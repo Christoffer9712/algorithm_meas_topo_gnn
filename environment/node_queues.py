@@ -29,11 +29,13 @@ class NodeQueues:
         service_rate_range=(3, 5),      # mu, per node type below
         base_load_range=(0.25, 0.7),    # mean rho each node sits at
         ou_theta= 0.006,                # mean-reversion rate (1/timescale)
-        ou_sigma=0.03,                  # driving noise magnitude
+        ou_sigma=0.02,                  # driving noise magnitude
         queue_tau=1.0,                  # queue relaxation time constant
         buffer_size=40.0,               # packets; sets loss curve
         rho_max=0.985,                  # clamp to keep M/M/1 finite
         seed=0,
+        include_queue_delay=True,
+        include_queue_loss=True
     ):
         self.G = graph
         self.rng = np.random.default_rng(seed)
@@ -42,6 +44,8 @@ class NodeQueues:
         self.queue_tau = queue_tau
         self.buffer_size = buffer_size
         self.rho_max = rho_max
+        self.include_queue_delay = include_queue_delay
+        self.include_queue_loss = include_queue_loss
 
         # Node-type multipliers: satellites are the scarce, contended resource;
         # gateways less so; the wired target is effectively uncongested.
@@ -128,8 +132,16 @@ class NodeQueues:
         delay_path = 0.0
         keep = 1.0
         for n in path:
-            delay_queue += 0*self.G.nodes[n]["queue_delay"] #TMP!!!!!!!!!!!
-            keep *= 1.0 #- self.G.nodes[n]["loss"]         #TMP!!!!!!!!!!!
+            if self.include_queue_delay:
+                delay_queue += self.G.nodes[n]["queue_delay"]
+            else:
+                delay_queue += 0 #self.G.nodes[n]["queue_delay"]
+
+            if self.include_queue_loss:
+                keep *= 1.0 - self.G.nodes[n]["loss"]
+            else:
+                keep *= 1.0 #- self.G.nodes[n]["loss"]
+
         for u, v in zip(path[:-1], path[1:]):
             if snapshot.has_edge(u, v):
                 delay_path += snapshot[u][v]["distance"] / prop_speed

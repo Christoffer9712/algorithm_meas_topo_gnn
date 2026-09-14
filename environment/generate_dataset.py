@@ -25,7 +25,7 @@ def generate_nets(seeds):
         nets.append(net)
     return nets
 
-def generate(dataset_path=None, T=400, seeds=(42,), nets=None):
+def generate(dataset_path=None, T=400, seeds=(42,), nets=None, include_queue_delay=True, include_queue_loss=True):
     if dataset_path is None:
         dataset_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)
@@ -58,7 +58,7 @@ def generate(dataset_path=None, T=400, seeds=(42,), nets=None):
         else:
             net = nets[idx]
 
-        env = RoutingEnvironment(net=net, seed=seed, queue_seed=seed, dt=1.0)
+        env = RoutingEnvironment(net=net, seed=seed, queue_seed=seed, dt=1.0, include_queue_delay=include_queue_delay, include_queue_loss=include_queue_loss)
         for tstep in range(T):
             H = env.snapshot()
             overlays = env.get_overlays()

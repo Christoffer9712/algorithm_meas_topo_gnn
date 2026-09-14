@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class MeasurementEmbedder(nn.Module):
     """
     Embed historical measurements relative to a predicted topology embedding h_pred.
@@ -12,54 +11,53 @@ class MeasurementEmbedder(nn.Module):
     g representing the measurement-informed embedding.
     """
 
-    def __init__(self, h_dim, hidden_dim=64, out_dim=64):
+    def __init__(self, h_dim):
         super().__init__()
-        # e_ij = MLP(h_pred, h_hist, elapsed)
-        self.e_mlp = nn.Sequential(
-            nn.Linear(h_dim * 2 + 1, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1),
-        ) # Attention scorer
-        
-        # MLP to embed (lambda, delta)
-        self.y_mlp = nn.Sequential(
-            nn.Linear(2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, out_dim),
-        )
+        self.proj = nn.Linear(h_dim, h_dim)
+        self.log_temp = nn.Parameter(torch.zeros(()))   # temp = exp(0) = 1 initially
+        self.log_decay = nn.Parameter(torch.zeros(()))   # temp = exp(0) = 1 initially
+
+    def get_alpha(self, h_pred, h_hists, elapsed, self_mask=None):
+        if h_pred.dim() == 1:
+            h_pred = h_pred.unsqueeze(0)
+        elapsed = elapsed.reshape(-1)
+
+        # learnable projection, then cosine similarity in the projected space
+        q = self.proj(h_pred)                   # [1, hidden]
+        k = self.proj(h_hists)                  # [N, hidden]
+
+        sim = F.cosine_similarity(q, k, dim=1)    # [N] in [-1, 1]
+        temp = self.log_temp.exp()                # learnable, positive
+
+        logits = sim / temp - self.log_decay.exp()*elapsed       # [N]
+        if self_mask is not None:
+            logits = logits.masked_fill(self_mask, float('-inf'))
+        alpha = torch.softmax(logits, dim=0)      # [N]
+
+        return alpha
+
+    def reconstruct_loo(self, h_pred, h_hists, meas_vals_std, elapsed, self_mask):
+        """
+        Leave-one-out
+        self_mask: bool [N], True where the history entry belongs to the query path
+                (these get -inf logits, i.e. excluded).
+        Returns predicted standardized [2] using only OTHER paths.
+        """
+        alpha = self.get_alpha(h_pred, h_hists, elapsed, self_mask)
+        return (alpha.unsqueeze(1) * meas_vals_std).sum(dim=0)
 
     def forward(self, h_pred, h_hists, meas_vals, elapsed):
         """
-        h_pred: Tensor [D] or [batch, D]
-        h_hists: Tensor [N, D]
-        meas_vals: Tensor [N, 2] (lambda, delta)
-        elapsed: Tensor [N, 1] (time since measurement)
-
-        Returns g: Tensor [out_dim]
+        h_pred:   [D] or [1, D]
+        h_hists:  [N, D]
+        meas_vals:[N, 2]  standardized (delay, loss)
+        elapsed:  [N] or [N, 1]
+        Returns:  g [2]   attention-weighted raw standardized measurement
         """
-        # Ensure 2D
-        if h_pred.dim() == 1:
-            h_pred = h_pred.unsqueeze(0)  # [1, D]
-        D = h_pred.shape[-1]
-        # Broadcast h_pred to match history length
-        if h_hists.dim() == 1:
-            h_hists = h_hists.unsqueeze(0)
         if meas_vals.dim() == 1:
-            meas_vals = meas_vals.unsqueeze(0)
-        if elapsed.dim() == 1:
-            elapsed = elapsed.unsqueeze(1)
+            meas_vals = meas_vals.unsqueeze(0)    # [1, 2]
 
-        # Concatenate h_pred, h_hist and elapsed to compute attention logits
-        N = h_hists.shape[0]
-        # Repeat h_pred N times
-        h_repeat = h_pred.expand(N, D)
-        e_in = torch.cat([h_repeat, h_hists, elapsed], dim=1)  # [N, 2D+1]
-        logits = self.e_mlp(e_in).squeeze(1)  # [N]
-        alpha = torch.softmax(logits, dim=0)  # attention over history
+        alpha = self.get_alpha(h_pred, h_hists, elapsed)
 
-        # Embed measurements
-        y = self.y_mlp(meas_vals)  # [N, out_dim]
-        g = (alpha.unsqueeze(1) * y).sum(dim=0)  # [out_dim]
+        g = (alpha.unsqueeze(1) * meas_vals).sum(dim=0)   # [2]
         return g

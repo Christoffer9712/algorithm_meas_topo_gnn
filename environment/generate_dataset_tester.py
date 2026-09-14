@@ -6,7 +6,82 @@ import numpy as np
 from .environment import RoutingEnvironment
 from .network import LayeredOrbitNetwork
 
+def plot_covariance(data, overlay_ids=None, max_overlays=None, use='total', min_overlap=5):
+    """
+    Correlation of per-overlay delay time series.
 
+    data: dict {oid: {'t':[...], 'meas_delay':[(path,queue),...], ...}}  (as built above)
+    use:  'total' (path+queue), 'path', or 'queue'
+    min_overlap: minimum shared timesteps required to compute a pair's correlation
+    Returns the correlation matrix (np.ndarray) and the oid order.
+    """
+    if overlay_ids is None:
+        overlay_ids = list(data.keys())
+    if max_overlays is not None:
+        overlay_ids = overlay_ids[:max_overlays]
+
+    # build a time-indexed series per overlay
+    series = {}   # oid -> dict {t: value}
+    for oid in overlay_ids:
+        t = np.asarray(data[oid]['t'])
+        md = np.asarray(data[oid]['meas_delay'], dtype=float)   # [T,2] (path, queue)
+        if use == 'total':
+            v = md[:, 0] + md[:, 1]
+        elif use == 'path':
+            v = md[:, 0]
+        elif use == 'queue':
+            v = md[:, 1]
+        else:
+            raise ValueError(use)
+        series[oid] = dict(zip(t.tolist(), v.tolist()))
+
+    n = len(overlay_ids)
+    corr = np.full((n, n), np.nan)
+    for a in range(n):
+        for b in range(n):
+            sa, sb = series[overlay_ids[a]], series[overlay_ids[b]]
+            common = sorted(set(sa) & set(sb))          # shared timesteps
+            if len(common) < min_overlap:
+                continue
+            va = np.array([sa[t] for t in common])
+            vb = np.array([sb[t] for t in common])
+            # correlation is undefined if either series is constant over the overlap
+            if va.std() < 1e-9 or vb.std() < 1e-9:
+                corr[a, b] = np.nan
+                continue
+            corr[a, b] = np.corrcoef(va, vb)[0, 1]
+
+    # ---- plot ----
+    fig, ax = plt.subplots(figsize=(0.5 * n + 3, 0.5 * n + 3))
+    im = ax.imshow(corr, vmin=-1, vmax=1, cmap='coolwarm')
+    ax.set_xticks(range(n)); ax.set_yticks(range(n))
+    ax.set_xticklabels(overlay_ids, rotation=90, fontsize=7)
+    ax.set_yticklabels(overlay_ids, fontsize=7)
+    ax.set_title(f'overlay delay correlation ({use})')
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label='Pearson r')
+
+    # annotate if small enough to read
+    if n <= 15:
+        for a in range(n):
+            for b in range(n):
+                if not np.isnan(corr[a, b]):
+                    ax.text(b, a, f'{corr[a,b]:.2f}', ha='center', va='center',
+                            fontsize=6,
+                            color='white' if abs(corr[a, b]) > 0.5 else 'black')
+
+    plt.tight_layout()
+    plt.show()
+
+    # ---- summary: this is the number that decides your architecture question ----
+    off = corr[~np.eye(n, dtype=bool)]
+    off = off[~np.isnan(off)]
+    if len(off):
+        print(f'off-diagonal |r|: mean={np.nanmean(np.abs(off)):.3f}  '
+              f'median={np.nanmedian(np.abs(off)):.3f}  '
+              f'frac|r|>0.3={np.mean(np.abs(off) > 0.3):.2f}  '
+              f'frac|r|>0.5={np.mean(np.abs(off) > 0.5):.2f}')
+    return corr, overlay_ids
+    
 def plot_overlay_delays_loss(data, overlay_ids=None, max_overlays=6):
     if overlay_ids is None:
         overlay_ids = list(data.keys())[:max_overlays]
@@ -51,12 +126,12 @@ def plot_overlay_delays_loss(data, overlay_ids=None, max_overlays=6):
     plt.show()
 
 
-dataset_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'predictor_dataset.pt')
+dataset_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'predictor_dataset_test.pt')
 dataset_path = os.path.abspath(dataset_path)
 
 print(f'Data set is stored at path {dataset_path}')
 
-T = 400
+T = 2000
 seeds = (42,43)
 nets = generate_nets(seeds)
 for idx in range(len(nets)):
@@ -73,7 +148,7 @@ for idx in range(len(nets)):
         f'range_limit = {nets[idx].range_limit}'
     )
     print('-----------------------------')
-generate(dataset_path, T, seeds=seeds, nets=nets)
+generate(dataset_path, T, seeds=seeds, nets=nets, include_queue_delay=True, include_queue_loss=False)
 
 try:
     data = torch.load(dataset_path, weights_only=False)
@@ -85,7 +160,7 @@ except TypeError:
 snapshots_list = []
 for gidx in range(len(data['history_list'])):
     print(f'gidx={gidx}')
-    env = RoutingEnvironment(net=nets[gidx])
+    env = RoutingEnvironment(net=nets[gidx],  include_queue_delay=True, include_queue_loss=False)
     snapshots = []
     delay_queue_vs_path = {}
     for tstep in range(T):
@@ -101,7 +176,7 @@ for gidx in range(len(data['history_list'])):
                 delay_queue_vs_path[oid] = {'t': [], 'meas_delay': [], 'meas_loss': [], 'path_change': []}
 
             changed = True
-            if tstep > 1:
+            if tstep > 0:
                 for d in data['history_list'][gidx][tstep-1]['overlay_paths']:
                     if oid == d['id']:
                         changed = not (d['underlay_path'] == underlay)
@@ -113,11 +188,14 @@ for gidx in range(len(data['history_list'])):
         
     snapshots_list.append(snapshots)
     ovl_ids = list(delay_queue_vs_path.keys())
+    plot_covariance(delay_queue_vs_path, overlay_ids=ovl_ids, use='queue')
+    plot_covariance(delay_queue_vs_path, overlay_ids=ovl_ids, use='total')
+
     plot_overlay_delays_loss(delay_queue_vs_path, overlay_ids=ovl_ids[0:10], max_overlays=6)
     plot_overlay_delays_loss(delay_queue_vs_path, overlay_ids=ovl_ids[-2:], max_overlays=6)
 
 # Optional: animate queue states across snapshots
-if True:
+if False:
     try:
         import environment.network as netmod
         for idx in range(len(snapshots_list)):

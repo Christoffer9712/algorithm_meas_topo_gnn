@@ -22,7 +22,7 @@ if RUN_MODE == 'train_predictor':
     # Generate dataset and train predictor models
     from environment.generate_dataset import generate, generate_nets
     from trainer.train_predictor import train
-
+    #from trainer.baseline_use_latest_meas import train
     re_calculate_data = False
     if re_calculate_data:
         T = 200
@@ -43,13 +43,13 @@ if RUN_MODE == 'train_predictor':
             )
             print('-----------------------------')
 
-        dataset_path = generate(T=T, seeds=seeds, nets=nets)
+        dataset_path = generate(T=T, seeds=seeds, nets=nets, include_queue_delay=True, include_queue_loss=False)
 
     else:
         dataset_path = os.path.join(os.path.dirname(__file__), 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)
 
-    model_path = train(dataset_path, device=DEVICE)
+    model_path = train(dataset_path, device=DEVICE, transfer_learning_model='predictor_models_with_meas.pth')
     print('Training complete. Models saved to', model_path)
     raise SystemExit(0)
 

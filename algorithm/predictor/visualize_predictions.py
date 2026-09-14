@@ -65,7 +65,7 @@ def deterministic_meas(edge_attr, ovl):
 repo_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, repo_root)
 # Paths
-dataset_path = os.path.join(repo_root, '../../data', 'predictor_dataset.pt')
+dataset_path = os.path.join(repo_root, '../../data', 'predictor_dataset.pt') # OBS!!!
 model_path = os.path.join(repo_root, '../../models', 'predictor_models.pth')
 output_dir = os.path.join(repo_root, '../../outputs')
 os.makedirs(output_dir, exist_ok=True)
@@ -83,7 +83,7 @@ dataset = PredictorDataset(dataset_path)
 N = min(400, len(dataset))
 print(f'Loading {N} samples from dataset (total {len(dataset)})')
 
-gidx = 13 #OBS!
+gidx = 1 #OBS!
 samples = [dataset[gidx][i] for i in range(N)]
 print(f'Sample len = {len(samples)}')
 
