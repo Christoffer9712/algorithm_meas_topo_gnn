@@ -1,8 +1,6 @@
 """
 Train MeasurementEmbedder + Predictor on generated dataset.
 
-Saves the trained weights to models/predictor_embedder.pth and
-models/predictor_predictor.pth (two modules).
 """
 import os
 import torch
@@ -10,17 +8,22 @@ import statistics
 from torch.utils.data import DataLoader
 import copy
 
-from algorithm.predictor.meas_predictor import MeasurementEmbedder 
+from algorithm.predictor.meas_predictor import MeasurementEmbedder
 from algorithm.predictor.predictor import Predictor
-from algorithm.predictor.hetero_encoder import HeteroGATv2Encoder
 from .dataset import PredictorDataset
-from algorithm.predictor.path_encoder import GATv2Encoder, GraphEncoder
-from torch_geometric.data import Data
-from environment.environment import RoutingEnvironment
+from algorithm.predictor.path_encoder import GraphEncoder, HeteroGATv2Encoder
+import random
 
-INCLUDE_MEAS = False
+INCLUDE_MEAS = True
 
-def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=1e-3, device='cpu', min_delta=1e-4, patience=15):
+# Each overlay embedding is the concatenation of its 4 path-node embeddings
+# [AC, SA, GW, TG], so the topology embedding width is 4 * out_dim.
+OUT_DIM = 64
+TOPO_DIM = 4 * OUT_DIM          # 256
+
+
+def train(dataset_path=None, model_dir=None, epochs=100, batch_size=32, lr=5e-4,
+          device='cpu', min_delta=1e-4, patience=15, transfer_learning_model=None):
     if dataset_path is None:
         dataset_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)
@@ -29,23 +32,47 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=1e-3,
         model_dir = os.path.abspath(model_dir)
     os.makedirs(model_dir, exist_ok=True)
 
-    
-    #env = RoutingEnvironment()
     dataset = PredictorDataset(dataset_path)
-    
-    #encoder = GATv2Encoder(in_dim=8, hidden_dim=128, out_dim=64, edge_dim=1).to(device)
-    
-    encoder = HeteroGATv2Encoder(node_in=10, virtual_in=1, hidden_dim=128, out_dim=64, heads=2, n_layers=3, dropout=0.0).to(device)
+
+    encoder = HeteroGATv2Encoder(hidden_dim=64, out_dim=OUT_DIM, heads=2,
+                                 n_layers=3, edge_dim=1, dropout=0.2).to(device)
     graph_encoder = GraphEncoder(encoder, device=device)
 
-    embedder = MeasurementEmbedder(h_dim=64, hidden_dim=128, out_dim=64).to(device)
-    # Predictor input: h_topo (D) + g (64) + horizon_m (1)
-    predictor = Predictor(in_dim=64 + 64 + 1, hidden_dim=128, dropout=0.0).to(device) # Input is H = [topo_embed || meas_embed || m]
+    # measurement embedder now operates on the concatenated topology embedding
+    embedder = MeasurementEmbedder(h_dim=TOPO_DIM).to(device)
+    # Predictor input: h_topo (TOPO_DIM) + g (64) + horizon_m (1)
+    predictor_topo = Predictor(in_dim=TOPO_DIM, hidden_dim=128, num_layers=3, dropout=0.2).to(device)
+    predictor_meas = Predictor(in_dim=2, hidden_dim=2, num_layers=1, dropout=0.2).to(device)
 
-    opt = torch.optim.Adam(list(encoder.parameters()) + list(embedder.parameters()) + list(predictor.parameters()), lr=lr)
+    params = list(encoder.parameters()) + list(embedder.parameters()) + list(predictor_topo.parameters()) + list(predictor_meas.parameters())
+    opt = torch.optim.Adam(params, lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        opt, mode='min', factor=0.75, patience=3
+        opt, mode='min', factor=0.5, patience=3
     )
+
+
+    if transfer_learning_model:
+        model_path = os.path.join(model_dir, transfer_learning_model)
+        ckpt = torch.load(model_path, map_location='cpu')
+        if 'embedder_state' in ckpt and 'predictor_topo_state' in ckpt and 'predictor_topo_meas' in ckpt and 'encoder_state' in ckpt:
+            embedder.load_state_dict(ckpt['embedder_state'])
+            predictor_topo.load_state_dict(ckpt['predictor_topo_state'])
+            predictor_meas.load_state_dict(ckpt['predictor_topo_meas'])
+            encoder.load_state_dict(ckpt['encoder_state'])
+            mean_delay = ckpt['mean_delay']
+            mean_loss = ckpt['mean_loss']
+            std_dev_delay = ckpt['std_dev_delay']
+            std_dev_loss = ckpt['std_dev_loss']
+            print(f"Loaded model at {model_path}")
+            opt = torch.optim.Adam([
+                {'params': encoder.parameters(),   'lr': lr/10},   # gentle since the encoder carries mostly topology info already trained
+                {'params': embedder.parameters(),  'lr': lr},
+                {'params': predictor_topo.parameters(), 'lr': lr},
+                {'params': predictor_meas.parameters(), 'lr': lr},
+            ])
+        else:
+            print(f'Could not load model = {transfer_learning_model}')
+
     # Loss weights: c_lambda, c_delta
     c_lambda = 1.0
     c_delta = 5.0
@@ -53,23 +80,21 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=1e-3,
     nbr_sims = dataset.get_nbr_of_sims()
 
     # Prediction horizon: M
-    M = 1 # NOTE!!!
-
+    M = 1
     # Measurement history depth: Delta
-    Delta = 1
+    Delta = 2
 
     # Contiguous time-based split (no shuffling across splits -> no leakage)
     lo, hi = Delta - 1, len(dataset) - M
     all_t = list(range(lo, hi))
     n = len(all_t)
     train_t = all_t[: int(0.70 * n)]
-    val_t   = all_t[int(0.70 * n) :] # OBS!!! made this to be larger!!!
-    test_t  = all_t[int(0.85 * n) :] # Currently not really in use
-    #train_t = val_t = test_t = all_t #OBS, use all data when validation is done on different simulation
+    val_t   = all_t[int(0.70 * n):]
+    test_t  = all_t[int(0.85 * n):]
 
     meas_delay = []
     meas_loss = []
-    for gidx in range(nbr_sims-1): #OBS -1
+    for gidx in range(nbr_sims - 1):
         for t in train_t:
             curr_overlay = dataset[gidx][t]['overlay_paths']
             for ovl in curr_overlay:
@@ -77,17 +102,13 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=1e-3,
                 meas_delay.append(ovl_meas[0])
                 meas_loss.append(ovl_meas[1])
 
-    # Calculate mean
     mean_loss = statistics.mean(meas_loss)
     print(f"Mean of the loss is {mean_loss}")
-
     mean_delay = statistics.mean(meas_delay)
     print(f"Mean of the delay is {mean_delay}")
 
-    # Calculate standard deviation
-    std_dev_loss= statistics.stdev(meas_loss)
+    std_dev_loss = statistics.stdev(meas_loss) if len(set(meas_loss)) > 1 else 1.0
     print(f"Standard Deviation of the loss is {std_dev_loss}")
-    
     std_dev_delay = statistics.stdev(meas_delay)
     print(f"Standard Deviation of the delay is {std_dev_delay}")
 
@@ -95,172 +116,182 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=1e-3,
     print(f"Baseline (predict-mean) val   = {baseline_loss_mean(val_t, dataset, 0, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):.4f}")
     print(f"Baseline (predict-mean) test  = {baseline_loss_mean(test_t, dataset, 0, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):.4f}")
 
-
-    def run_t(t, gidx, data, return_attention, ep):
-        curr_overlay = data[(gidx,t)]['overlay_paths']
+    def run_t(t, gidx, data, return_attention, ep, h_topo):
+        curr_overlay = data[(gidx, t)]['overlay_paths']
         curr_overlay_ids = [ovl['id'] for ovl in curr_overlay]
+
         H_hist = []
         Meas_hist = []
         Elapsed = []
-        '''
+        hist_ids = []
+
+        sim_loss = torch.zeros((), device=device)
+        sim_count = 0
         if INCLUDE_MEAS:
             for i in range(0, Delta):
                 d = dataset[gidx][t - i]
-                #G = env.snapshot_at_time_t(t-i)
-                data = Data(x=d['x'], edge_index=d['edge_index'], edge_attr=d['edge_attr'], node_names=d['node_names'], name_to_idx=d['name_to_idx'])            
                 hist_overlay = d['overlay_paths']
-                h_hist = graph_encoder.encode_overlays_pyg(data, hist_overlay, return_attention)
+                # encode the whole graph for time (t-i) ONCE, for all overlays
+                missing = [ovl for ovl in hist_overlay if (ovl['id'], t - i) not in h_topo]
+                if missing:
+                    enc = graph_encoder.encode_overlays_pyg_batched(data[(gidx, t - i)], missing)
+                    for entry in enc.keys():
+                        h_topo[(entry, t - i)] = enc[entry]
                 for ovl in hist_overlay:
-                    H_hist.append(h_hist[ovl['id']])
-                    Meas_hist.append(torch.tensor(ovl['meas'], dtype=torch.float, device=device))
+                    H_hist.append(h_topo[(ovl['id'], t - i)])
+                    Meas_hist.append(torch.tensor(ovl['meas'][:2], dtype=torch.float, device=device))
                     Elapsed.append(float(i))
+                    hist_ids.append((ovl['id'], t - i))
 
-            H_hist = torch.stack(H_hist)
-            Meas_hist = torch.stack(Meas_hist)
-            Elapsed = torch.tensor(Elapsed, device=device).unsqueeze(1)
-        '''
+            if len(H_hist) > 0:  # Can be 0 if there are no overlays at given time
+                H_hist = torch.stack(H_hist)
+                Meas_hist = torch.stack(Meas_hist)
+                Meas_hist = torch.stack([
+                    (Meas_hist[:, 0] - mean_delay) / (std_dev_delay + 1e-8),
+                    (Meas_hist[:, 1] - mean_loss) / (std_dev_loss + 1e-8),
+                ], dim=1)
+                Elapsed = torch.tensor(Elapsed, device=device).unsqueeze(1)
+
+                # ---- LOO similarity objective on a random subset ----
+                K = min(5, len(hist_ids))
+                if K >= 2:  # need at least a query + one other
+                    sample_idx = random.sample(range(len(hist_ids)), K)  # no replacement, in range
+                    Meas_sim = Meas_hist[sample_idx]
+                    Elapsed_sim = Elapsed[sample_idx]
+                    H_sim = H_hist[sample_idx]
+
+                    for i in range(K):
+                        self_mask = torch.zeros(K, dtype=torch.bool, device=device)
+                        self_mask[i] = True                         # leave out entry i
+                        # recency relative to the query being reconstructed
+                        rel_elapsed = (Elapsed_sim - Elapsed_sim[i]).abs().reshape(-1)
+                        meas_hat = embedder.reconstruct_loo(H_sim[i], H_sim, Meas_sim, rel_elapsed, self_mask)
+                        tgt_std = Meas_sim[i].detach()
+                        sim_loss = sim_loss + ((meas_hat - tgt_std) ** 2).sum()
+                        sim_count += 1
+
         loss = torch.zeros((), device=device)
         count = 0
-        for m in range(1, M+1):
-            #d = dataset[gidx][t + m]
-            #data = Data(x=d['x'], edge_index=d['edge_index'], edge_attr=d['edge_attr'], node_names=d['node_names'], name_to_idx=d['name_to_idx'])            
+        for m in range(1, M + 1):
             fut_overlay = data[(gidx, t + m)]['overlay_paths']
 
-            # overlays we actually train on this step
             eligible = [f_ovl for f_ovl in fut_overlay
                         if f_ovl['id'] in curr_overlay_ids]
             if not eligible:
                 continue
 
-            # --- attention plotting path: unchanged, single-graph, one overlay ---
-            if return_attention:
-                first = eligible[0]
-                h_first = graph_encoder.encode_overlays_pyg(
-                    data[(gidx, t+m)], [first], return_attention=True, ep=ep)
-                return_attention = False   # only plot one overlay
-                h_topo = {first['id']: h_first[first['id']]}
-                # encode the rest in one batched launch
-                rest = eligible[1:]
-                if rest:
-                    h_topo.update(graph_encoder.encode_overlays_pyg_batched(data[(gidx, t+m)], rest))
-            else:
-                # --- normal path: one batched forward for all eligible overlays ---
-                h_topo = graph_encoder.encode_overlays_pyg_batched(data[(gidx, t+m)], eligible)
+            # one encode of the whole underlay graph, then per-overlay lookup
+            enc = graph_encoder.encode_overlays_pyg_batched(data[(gidx, t + m)], eligible)
+            for entry in enc.keys():
+                h_topo[(entry, t + m)] = enc[entry]
 
-            # --- heads + loss: per overlay, identical to before ---
             for f_ovl in eligible:
                 ovl_id = f_ovl['id']
                 if INCLUDE_MEAS:
-                    g = embedder(h_topo[ovl_id], H_hist, Meas_hist, Elapsed)
+                    g = embedder(h_topo[(ovl_id, t + m)], H_hist, Meas_hist, Elapsed+m)
                 else:
-                    g = torch.zeros(64, device=device)
-                H = torch.cat([h_topo[ovl_id], g,
-                               torch.tensor([float(m)], dtype=torch.float, device=device)],
-                              dim=0).unsqueeze(0)
-                out = predictor(H)
+                    g = torch.zeros(2)
+                out_topo = predictor_topo(h_topo[(ovl_id, t+m)])
+                out_meas = predictor_meas(g)
+                out = out_topo + out_meas
                 tgt = torch.tensor(f_ovl['meas'], dtype=torch.float, device=device)
 
-                z0 = out[0,0] - (tgt[0]-mean_delay)/(std_dev_delay+1e-8)
-                z1 = out[0,1] - (tgt[1]-mean_loss)/(std_dev_loss+1e-8)
+                z0 = out[0] - (tgt[0] - mean_delay) / (std_dev_delay + 1e-8)
+                z1 = out[1] - (tgt[1] - mean_loss) / (std_dev_loss + 1e-8)
 
-                loss = loss + (c_delta * z0**2 + c_lambda * z1**2)
+                loss = loss + (c_delta * z0 ** 2 + c_lambda * z1 ** 2)
                 count += 1
-            '''    
-            for f_ovl in fut_overlay:
-                if f_ovl['id'] in curr_overlay_ids:
-                    if return_attention:
-                        h_topo = graph_encoder.encode_overlays_pyg(data, [f_ovl], return_attention=return_attention, ep=ep)
-                        return_attention = False # Let's only plot one overlay attention plot
-                    else:
-                        h_topo = graph_encoder.encode_overlays_pyg(data, [f_ovl], return_attention=return_attention)
-                    ovl_id = f_ovl['id']
-                    if INCLUDE_MEAS:
-                        g = embedder(h_topo[ovl_id], H_hist, Meas_hist, Elapsed)
-                    else:
-                        g = torch.zeros(64, device=device)
-                    H = torch.cat([h_topo[ovl_id], g, torch.tensor([float(m)], dtype=torch.float, device=device)], dim=0).unsqueeze(0)
-                    out = predictor(H)
-                    tgt = torch.tensor(f_ovl['meas'], dtype=torch.float, device=device)
 
-                    z0 = out[0,0] - (tgt[0]-mean_delay)/(std_dev_delay+1e-8)
-                    z1 = out[0,1] - (tgt[1]-mean_loss)/(std_dev_loss+1e-8)
+        return loss, count, sim_loss, sim_count, h_topo
 
-                    loss = loss + (c_delta * z0**2 + c_lambda * z1**2)
-                    count += 1
-                else:
-                    pass
-            '''
-        return loss, count
-
-    
-    batch_size = batch_size/(nbr_sims-1) #For each step, train over all sims
+    batch_size = batch_size / (nbr_sims - 1)  # For each step, train over all sims
+    beta = 0.2
 
     best_val = float('inf')
     best_state = None
     epochs_no_improve = 0
 
+    # ---- load the pre-built HeteroData graphs once ----
     data = {}
     for gidx in range(nbr_sims):
         for t in range(len(dataset)):
             d = dataset[gidx][t]
-            tmp = Data(x=d['x'], edge_index=d['edge_index'], edge_attr=d['edge_attr'], node_names=d['node_names'], name_to_idx=d['name_to_idx'], overlay_paths=d['overlay_paths']).to(device)
+            tmp = d['data'].to(device)               # already a HeteroData
+            tmp.overlay_paths = d['overlay_paths']   # attach measurements for lookup
             data[(gidx, t)] = tmp
-            
-    
+
     for ep in range(epochs):
         # ---- train ----
-        encoder.train(); embedder.train(); predictor.train()
+        encoder.train(); embedder.train(); predictor_topo.train(); predictor_meas.train()
         train_loss = 0.0
+        train_loss_sim = 0.0
         batch_sample = 1
-        loss_batch = 0.0
+        loss_batch = torch.zeros((), device=device)
+        loss_batch_sim = torch.zeros((), device=device)
+        h_topo = {}
         for t in train_t:
             loss = torch.zeros((), device=device); count = 0
-            for gidx in range(nbr_sims): #OBS! add -1 for leaving 1 sim out for validation
-                if ep%10 == 0 and gidx == 0 and t == 0: # This is only to visualise the attention
-                    encoder.eval(); embedder.eval(); predictor.eval()
-                    with torch.no_grad():
-                        loss_gidx, count_gidx = run_t(t, gidx, data, return_attention=True, ep=ep) #Start with gidx == 0
-                    encoder.train(); embedder.train(); predictor.train()
-                else:
-                    loss_gidx, count_gidx = run_t(t, gidx, data, return_attention=False, ep=ep)
+            loss_sim = torch.zeros((), device=device); count_sim = 0
+            for gidx in range(nbr_sims):
+                loss_gidx, count_gidx, sim_loss_gidx, sim_count_gidx, h_topo = run_t(t, gidx, data, return_attention=False, ep=ep, h_topo=h_topo)
                 loss = loss + loss_gidx
                 count = count + count_gidx
+                loss_sim = loss_sim + sim_loss_gidx
+                count_sim = count_sim + sim_count_gidx
 
-            if count == 0:
+            if count == 0 or count_sim == 0:
                 continue
             step_loss = loss / count
             loss_batch = loss_batch + step_loss
             train_loss += float((step_loss).detach())
+
+            step_loss_sim = loss_sim / count_sim
+            loss_batch_sim = loss_batch_sim + step_loss_sim
+            train_loss_sim += float((step_loss_sim).detach())
+
             if batch_sample >= batch_size:
                 opt.zero_grad()
-                loss_batch.backward()
+                full_loss = loss_batch + beta * loss_batch_sim
+                full_loss.backward()
+                torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
                 opt.step()
                 batch_sample = 1
-                loss_batch = 0.0
+                loss_batch = torch.zeros((), device=device)
+                loss_batch_sim = torch.zeros((), device=device)
+                h_topo = {}
             else:
                 batch_sample = batch_sample + 1
 
-        train_loss = train_loss/(len(train_t)) #OBS!!!
+        train_loss = train_loss / (len(train_t))
+        train_loss_sim = train_loss_sim / (len(train_t))
+        train_combined = train_loss + beta * train_loss_sim
 
         # ---- validate ----
-        encoder.eval(); embedder.eval(); predictor.eval()
+        encoder.eval(); embedder.eval(); predictor_topo.eval(); predictor_meas.eval()
         val_loss = 0.0
+        val_loss_sim = 0.0
+        h_topo = {}
         with torch.no_grad():
             for t in val_t:
                 loss = torch.zeros((), device=device); count = 0
-                for gidx in range(nbr_sims): #range(1): #OBS! leaving 1 sim out for validation
-                    loss_gidx, count_gidx = run_t(t, gidx, data, return_attention=False, ep=ep) #run_t(t, nbr_sims-1, dataset) #validating using unseen topology (last one)
+                loss_sim = torch.zeros((), device=device); count_sim = 0
+                for gidx in range(nbr_sims):
+                    loss_gidx, count_gidx, sim_loss_gidx, sim_count_gidx, h_topo = run_t(t, gidx, data, return_attention=False, ep=ep, h_topo=h_topo)
                     loss = loss + loss_gidx
                     count = count + count_gidx
+                    loss_sim = loss_sim + sim_loss_gidx
+                    count_sim = count_sim + sim_count_gidx
 
-                if count == 0:
+                if count == 0 or count_sim == 0:
                     continue
-   
                 val_loss += float((loss / count).detach())
-            
-            val_loss = val_loss/(len(val_t)) #OBS!!!
+                val_loss_sim += float((loss_sim / count_sim).detach())
 
-        scheduler.step(val_loss) # This reduces lr if the learning stalls
+            val_loss = val_loss / (len(val_t))
+            val_loss_sim = val_loss_sim / (len(val_t))
+            val_combined = val_loss + beta * val_loss_sim
+
+        scheduler.step(val_loss)
         # ---- early stopping ----
         if val_loss < best_val - min_delta:
             best_val = val_loss
@@ -268,7 +299,8 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=1e-3,
             best_state = {
                 'encoder_state': copy.deepcopy(encoder.state_dict()),
                 'embedder_state': copy.deepcopy(embedder.state_dict()),
-                'predictor_state': copy.deepcopy(predictor.state_dict()),
+                'predictor_topo_state': copy.deepcopy(predictor_topo.state_dict()),
+                'predictor_meas_state': copy.deepcopy(predictor_meas.state_dict()),
             }
         else:
             epochs_no_improve += 1
@@ -278,43 +310,33 @@ def train(dataset_path=None, model_dir=None, epochs=100, batch_size=16, lr=1e-3,
 
         msg = f"""
               Epoch: {ep}
-              train_loss = {train_loss}
-              val_loss   = {val_loss}
-              lr         = {opt.param_groups[0]["lr"]}
-              encoder    = {next(encoder.parameters()).device}
-              embedder   = {next(embedder.parameters()).device}
-              predictor  = {next(predictor.parameters()).device}
+              train_loss     = {train_loss}
+              train_loss_loo = {train_loss_sim}
+              train_combined = {train_combined}
+              val_loss       = {val_loss}
+              val_loss_loo   = {val_loss_sim}
+              val_combined   = {val_combined}
+              lr             = {opt.param_groups[0]["lr"]}
               """
-
         print(msg)
 
-    # restore best weights before test + save
+    # restore best weights before save
     if best_state is not None:
         encoder.load_state_dict(best_state['encoder_state'])
         embedder.load_state_dict(best_state['embedder_state'])
-        predictor.load_state_dict(best_state['predictor_state'])
-
-    # ---- test (once, after training) ----
-    '''
-    encoder.eval(); embedder.eval(); predictor.eval()
-    test_loss = 0.0
-    with torch.no_grad():
-        for t in test_t:
-            for gidx in range(nbr_sims):
-                loss, count = run_t(t, gidx, dataset)
-                if count == 0:
-                    continue
-                test_loss += float((loss / count).detach())
-    test_loss = test_loss/(len(test_t))
-    print(f"Test loss = {test_loss}")
-    '''
+        predictor_topo.load_state_dict(best_state['predictor_topo_state'])
+        predictor_meas.load_state_dict(best_state['predictor_meas_state'])
 
     # Save models
-    torch.save({'encoder_state': encoder.state_dict(), 'embedder_state': embedder.state_dict(), 'predictor_state': predictor.state_dict(),
-                'mean_delay':mean_delay, 'mean_loss':mean_loss, 'std_dev_delay':std_dev_delay, 'std_dev_loss':std_dev_loss},
-                os.path.join(model_dir, 'predictor_models.pth'))
+    torch.save({'encoder_state': encoder.state_dict(), 'embedder_state': embedder.state_dict(),
+                'predictor_topo_state': predictor_topo.state_dict(),
+                'predictor_meas_state': predictor_meas.state_dict(),
+                'mean_delay': mean_delay, 'mean_loss': mean_loss,
+                'std_dev_delay': std_dev_delay, 'std_dev_loss': std_dev_loss},
+               os.path.join(model_dir, 'predictor_models.pth'))
     print('Saved trained models to', os.path.join(model_dir, 'predictor_models.pth'))
     return os.path.join(model_dir, 'predictor_models.pth')
+
 
 def baseline_loss_mean(split_t, dataset, gidx, M, mean_loss, std_dev_loss, mean_delay, std_dev_delay, c_lambda, c_delta):
     total, n_t = 0.0, 0
@@ -327,15 +349,15 @@ def baseline_loss_mean(split_t, dataset, gidx, M, mean_loss, std_dev_loss, mean_
                 ovl_id = ovl['id']
                 tgt = next((path['meas'] for path in d['overlay_paths'] if path['id'] == ovl_id), None)
                 if tgt is not None:
-                    z0 = (tgt[0]-mean_delay)/(std_dev_delay+1e-8)
-                    z1 = (tgt[1]-mean_loss)/(std_dev_loss+1e-8)
-                    # prediction = 0 in standardized space
-                    loss += c_delta * z0**2 + c_lambda * z1**2
+                    z0 = (tgt[0] - mean_delay) / (std_dev_delay + 1e-8)
+                    z1 = (tgt[1] - mean_loss) / (std_dev_loss + 1e-8)
+                    loss += c_delta * z0 ** 2 + c_lambda * z1 ** 2
                     count += 1
         if count:
             total += loss / count
             n_t += 1
     return total / n_t if n_t else float('nan')
+
 
 if __name__ == '__main__':
     train(epochs=10, batch_size=32)

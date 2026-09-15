@@ -5,12 +5,12 @@ from .node_queues import NodeQueues
 class RoutingEnvironment:
     """Encapsulates a dynamic network, queue state, and current time."""
 
-    def __init__(self, net: LayeredOrbitNetwork, queue_seed=0, dt=1.0, seed=42):
+    def __init__(self, net: LayeredOrbitNetwork, queue_seed=0, dt=1.0, seed=42, include_node_delay=True):
         self.dt = dt
         self.t = 0.0
         self.seed = seed
         self.net = net
-        self.queues = NodeQueues(self.net.G, seed=queue_seed)
+        self.queues = NodeQueues(self.net.G, seed=queue_seed, include_node_delay=include_node_delay)
         self._snapshot = None
 
     def snapshot(self):

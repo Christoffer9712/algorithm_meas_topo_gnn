@@ -25,7 +25,7 @@ def generate_nets(seeds):
         nets.append(net)
     return nets
 
-def generate(dataset_path=None, T=400, seeds=(42,), nets=None):
+def generate(dataset_path=None, T=400, seeds=(42,), nets=None, include_node_delay=True):
     if dataset_path is None:
         dataset_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)
@@ -35,7 +35,7 @@ def generate(dataset_path=None, T=400, seeds=(42,), nets=None):
     os.makedirs(data_dir, exist_ok=True)
 
     history_list = []
-        
+
     # Run full simulation to collect history
     for idx in range(len(seeds)):
         history = {}
@@ -58,27 +58,31 @@ def generate(dataset_path=None, T=400, seeds=(42,), nets=None):
         else:
             net = nets[idx]
 
-        env = RoutingEnvironment(net=net, seed=seed, queue_seed=seed, dt=1.0)
+        # normalisation constants for satellite layer / idx features
+        n_layers_sat = len(net.sats_per_ring)          # number of rings/layers
+        n_sats_per_ring = max(net.sats_per_ring)       # largest ring size
+
+        env = RoutingEnvironment(net=net, seed=seed, queue_seed=seed, dt=1.0, include_node_delay=include_node_delay)
         for tstep in range(T):
             H = env.snapshot()
             overlays = env.get_overlays()
 
+            data = snapshot_to_pyg(
+                H,
+                n_layers_sat=n_layers_sat,
+                n_sats_per_ring=n_sats_per_ring,
+            )
+
             history[tstep] = {}
             history[tstep]['t'] = tstep
-
-            data = snapshot_to_pyg(H)
-            history[tstep] = {}
-            history[tstep]['x'] = data.x
-            history[tstep]['edge_index'] = data.edge_index
-            history[tstep]['edge_attr'] = data.edge_attr
-            history[tstep]['node_names'] = data.node_names
-            history[tstep]['name_to_idx'] = data.name_to_idx
+            # store the whole HeteroData; the trainer consumes it directly
+            history[tstep]['data'] = data
 
             ovl_list = []
             for ovl in overlays:
                 oid = ovl['id']
                 underlay, meas = env.path_metrics_for_overlay(ovl, H)  # (delay, loss, delay_queue, delay_path)
-                ovl_list.append({'id': oid, 'underlay_path': underlay, 'overlay_path': ovl['overlay_path'], 'meas':meas})
+                ovl_list.append({'id': oid, 'underlay_path': underlay, 'overlay_path': ovl['overlay_path'], 'meas': meas})
 
             history[tstep]['overlay_paths'] = ovl_list
             env.step()
@@ -86,11 +90,9 @@ def generate(dataset_path=None, T=400, seeds=(42,), nets=None):
         history_list.append(history)
 
     print(f"Generated {len(seeds)} x {len(history)} steps, saving to {dataset_path}")
-    #history_list = [history[t] for t in sorted(history.keys())] 
-    #torch.save(history_list, dataset_path)
     torch.save({'history_list': history_list}, dataset_path)
-    return(dataset_path)
+    return dataset_path
 
 if __name__ == '__main__':
-    path = generate(T=400, seeds=(1))
+    path = generate(T=400, seeds=(1,))
     print('Done, dataset at', path)

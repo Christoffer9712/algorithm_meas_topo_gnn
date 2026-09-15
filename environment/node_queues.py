@@ -34,6 +34,7 @@ class NodeQueues:
         buffer_size=40.0,               # packets; sets loss curve
         rho_max=0.985,                  # clamp to keep M/M/1 finite
         seed=0,
+        include_node_delay = True
     ):
         self.G = graph
         self.rng = np.random.default_rng(seed)
@@ -42,6 +43,7 @@ class NodeQueues:
         self.queue_tau = queue_tau
         self.buffer_size = buffer_size
         self.rho_max = rho_max
+        self.include_node_delay = include_node_delay
 
         # Node-type multipliers: satellites are the scarce, contended resource;
         # gateways less so; the wired target is effectively uncongested.
@@ -128,7 +130,8 @@ class NodeQueues:
         delay_path = 0.0
         keep = 1.0
         for n in path:
-            delay_queue += 0*self.G.nodes[n]["queue_delay"] #TMP!!!!!!!!!!!
+            if self.include_node_delay:
+                delay_queue += self.G.nodes[n]["queue_delay"]
             keep *= 1.0 #- self.G.nodes[n]["loss"]         #TMP!!!!!!!!!!!
         for u, v in zip(path[:-1], path[1:]):
             if snapshot.has_edge(u, v):

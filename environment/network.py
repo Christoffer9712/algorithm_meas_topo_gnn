@@ -82,7 +82,7 @@ class LayeredOrbitNetwork:
                 phase = jitter + 2 * math.pi * i / n
                 self.G.add_node(
                     f"SAT{r}-{i}", node_type="Satellite", layer=1 + r,
-                    ring=r, radius=radius, phase=phase, speed=speed,
+                    ring=r, idx=i, radius=radius, phase=phase, speed=speed,
                 )
 
         gw_layer = 1 + self.n_rings
@@ -116,9 +116,9 @@ class LayeredOrbitNetwork:
         ax, ay = pos["AC-0"]
         return {n: (x - ax, y - ay) for n, (x, y) in pos.items()}
 
-    def ranges_at(self, t):
-        """Slant range from the aircraft to every node."""
-        return {n: math.hypot(dx, dy) for n, (dx, dy) in self.offsets_at(t).items()}
+    #def ranges_at(self, t):
+    #    """Slant range from the aircraft to every node."""
+    #    return {n: math.hypot(dx, dy) for n, (dx, dy) in self.offsets_at(t).items()}
 
     # ------------------------------------------------------------------ edges
 
@@ -136,12 +136,12 @@ class LayeredOrbitNetwork:
         """
         pos = self.positions_at(t)
         off = self.offsets_at(t)
-        rng_ = self.ranges_at(t)
+        #rng_ = self.ranges_at(t)
 
         H = nx.Graph()
         for n, d in self.G.nodes(data=True):
             attrs = {k: v for k, v in d.items() if k != "static_pos"}
-            H.add_node(n, **attrs, offset=off[n], range=rng_[n], pos=pos[n], t=t)
+            H.add_node(n, **attrs, offset=off[n], pos=pos[n], t=t) #range=rng_[n], pos=pos[n], t=t)
 
         nodes = list(self.G.nodes(data=True))
         for i, (u, du) in enumerate(nodes):
@@ -154,7 +154,7 @@ class LayeredOrbitNetwork:
         return H
 
     # --------------------------------------------------------- feature export
-
+    '''
     def node_features(self, t):
         """{node: (dx, dy, range, type_index)} in the aircraft frame."""
         types = ["Aircraft", "Satellite", "Gateway", "Target"]
@@ -163,7 +163,7 @@ class LayeredOrbitNetwork:
             n: (off[n][0], off[n][1], rng_[n], types.index(d["node_type"]))
             for n, d in self.G.nodes(data=True)
         }
-
+    '''
     # ------------------------------------------------------- path enumeration
 
     def underlay_paths(self, t, max_paths=None):
