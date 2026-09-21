@@ -23,10 +23,10 @@ if RUN_MODE == 'train_predictor':
     from environment.generate_dataset import generate, generate_nets
     from trainer.train_predictor import train
 
-    re_calculate_data = False
+    re_calculate_data = True
     if re_calculate_data:
         T = 200
-        seeds = range(40)
+        seeds = range(80,120) 
         nets = generate_nets(seeds)
         for idx in range(len(nets)):
             print(
@@ -43,7 +43,7 @@ if RUN_MODE == 'train_predictor':
             )
             print('-----------------------------')
 
-        dataset_path = generate(T=T, seeds=seeds, nets=nets, include_node_delay=True)
+        dataset_path = generate(T=T, seeds=seeds, nets=nets, include_node_delay=False) #OBS!
 
     else:
         dataset_path = os.path.join(os.path.dirname(__file__), 'data', 'predictor_dataset.pt')

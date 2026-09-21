@@ -67,11 +67,7 @@ def generate(dataset_path=None, T=400, seeds=(42,), nets=None, include_node_dela
             H = env.snapshot()
             overlays = env.get_overlays()
 
-            data = snapshot_to_pyg(
-                H,
-                n_layers_sat=n_layers_sat,
-                n_sats_per_ring=n_sats_per_ring,
-            )
+            data = snapshot_to_pyg(H, pos_scale=300.0, dist_scale=300.0, vel_scale=1.0)
 
             history[tstep] = {}
             history[tstep]['t'] = tstep

@@ -72,7 +72,7 @@ class LayeredOrbitNetwork:
     def _build_nodes(self, gateway_positions, target_positions):
         """Create all nodes with static attributes. Positions come later."""
         self.G.add_node("AC-0", node_type="Aircraft", layer=0,
-                        static_pos=self.aircraft_pos)
+                        static_pos=self.aircraft_pos, velocity=(0, 0))
 
         for r, n in enumerate(self.sats_per_ring):
             radius = self.ring_radii[r]
@@ -80,20 +80,22 @@ class LayeredOrbitNetwork:
             jitter = self.rng.random() * 2 * math.pi
             for i in range(n):
                 phase = jitter + 2 * math.pi * i / n
+                vx = -radius * speed * math.sin(phase)
+                vy =  radius * speed * math.cos(phase)
                 self.G.add_node(
                     f"SAT{r}-{i}", node_type="Satellite", layer=1 + r,
                     ring=r, idx=i, radius=radius, phase=phase, speed=speed,
-                )
+                    velocity=(vx, vy))
 
         gw_layer = 1 + self.n_rings
         for i, p in enumerate(gateway_positions):
             self.G.add_node(f"GW-{i}", node_type="Gateway",
-                            layer=gw_layer, static_pos=tuple(p))
+                            layer=gw_layer, static_pos=tuple(p), velocity=(0, 0))
 
         tgt_layer = gw_layer + 1
         for i, p in enumerate(target_positions):
             self.G.add_node(f"TGT-{i}", node_type="Target",
-                            layer=tgt_layer, static_pos=tuple(p))
+                            layer=tgt_layer, static_pos=tuple(p), velocity=(0, 0))
 
     # -------------------------------------------------------------- positions
 
