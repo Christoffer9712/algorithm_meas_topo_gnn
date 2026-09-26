@@ -128,7 +128,7 @@ class NodeQueues:
         delay_path = 0.0
         keep = 1.0
         for n in path:
-            delay_queue += 0*self.G.nodes[n]["queue_delay"] #TMP!!!!!!!!!!!
+            delay_queue += self.G.nodes[n]["queue_delay"] #TMP!!!!!!!!!!!
             keep *= 1.0 #- self.G.nodes[n]["loss"]         #TMP!!!!!!!!!!!
         for u, v in zip(path[:-1], path[1:]):
             if snapshot.has_edge(u, v):

@@ -25,8 +25,8 @@ if RUN_MODE == 'train_predictor':
 
     re_calculate_data = False
     if re_calculate_data:
-        T = 200
-        seeds = range(20)
+        T = 300
+        seeds = range(0,30)
         nets = generate_nets(seeds)
         for idx in range(len(nets)):
             print(
@@ -49,7 +49,7 @@ if RUN_MODE == 'train_predictor':
         dataset_path = os.path.join(os.path.dirname(__file__), 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)
 
-    model_path = train(dataset_path, device=DEVICE)
+    model_path = train(dataset_path, device=DEVICE, transfer_learning_model='predictor_models.pth')
     print('Training complete. Models saved to', model_path)
     raise SystemExit(0)
 
