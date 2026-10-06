@@ -6,10 +6,12 @@ models/predictor_predictor.pth (two modules).
 """
 import os
 import torch
+import torch.nn as nn
 import statistics
 from torch.utils.data import DataLoader
 import copy
 import numpy as np
+import random
 
 from algorithm.predictor.hetero_encoder import HeteroGATv2Encoder
 from .dataset import PredictorDataset
@@ -21,9 +23,73 @@ from algorithm.predictor.f_topo import f_topo
 
 INCLUDE_MEAS = True
 REMOVE_SELF_MEAS = True
+REMOVE_SELF_MEAS_PERC = 1.0
 
-def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3, 
-          device='cpu', min_delta=1e-4, patience=15, transfer_learning_model=None):
+# Path encoder: 'gat' = HeteroGATv2 over the full underlay graph,
+#               'mlp' = small MLP on the overlay waypoint nodes only (no underlay topology)
+ENCODER_TYPE = 'gat'
+GRAD_CLIP = 1.0
+
+class OverlayMLPEncoder(nn.Module):
+    """Encodes an overlay path from its overlay nodes only (ovl['overlay_path']).
+
+    Input per overlay: node features data.x of each waypoint (+ a valid flag),
+    padded to n_wp slots, the hop distances between consecutive waypoints
+    (positions data.x[:, 0:2]) and the total distance. Nothing from the underlay
+    graph (edges, intermediate satellites, routing) is used.
+
+    Same interface as GraphEncoder, so it can replace graph_encoder directly.
+    """
+
+    def __init__(self, node_in=10, n_wp=4, hidden_dim=128, out_dim=64, dropout=0.0, device='cpu'):
+        super().__init__()
+        self.node_in, self.n_wp, self.device = node_in, n_wp, device
+        in_dim = n_wp * (node_in + 1) + (n_wp - 1) + 1
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(hidden_dim, out_dim),
+        )
+
+    def overlay_input(self, data, ovl):
+        idx = [data.name_to_idx[n] for n in ovl['overlay_path']]
+        feats = data.x[idx].float()                            # (L, node_in)
+        pos = feats[:, 0:2]
+        hops = (pos[1:] - pos[:-1]).norm(dim=1)                # (L-1,)
+        L = min(len(idx), self.n_wp)
+        nodes = torch.zeros(self.n_wp, self.node_in + 1, device=feats.device)
+        nodes[:L, :self.node_in] = feats[:L]
+        nodes[:L, self.node_in] = 1.0                          # slot is a real waypoint
+        hop_block = torch.zeros(self.n_wp - 1, device=feats.device)
+        k = min(len(hops), self.n_wp - 1)
+        hop_block[:k] = hops[:k]
+        return torch.cat([nodes.flatten(), hop_block, hops.sum().reshape(1)])
+
+    def encode_overlays_pyg_batched(self, data, overlays):
+        X = torch.stack([self.overlay_input(data, o) for o in overlays])
+        H = self.net(X)
+        return {o['id']: H[k] for k, o in enumerate(overlays)}
+
+
+def build_encoder(encoder_type, topo_dim, device='cpu'):
+    """(encoder module with the parameters, object with encode_overlays_pyg_batched)."""
+    if encoder_type == 'gat':
+        encoder = HeteroGATv2Encoder(node_in=10, virtual_in=1, hidden_dim=128, out_dim=topo_dim, heads=2, n_layers=3, dropout=0.0).to(device)
+        return encoder, GraphEncoder(encoder, device=device)
+    if encoder_type == 'mlp':
+        encoder = OverlayMLPEncoder(node_in=8, n_wp=4, hidden_dim=128, out_dim=topo_dim, dropout=0.0, device=device).to(device)
+        return encoder, encoder
+    raise ValueError(f"unknown encoder_type {encoder_type!r}, use 'gat' or 'mlp'")
+
+
+def model_filename(encoder_type):
+    return 'predictor_models.pth' if encoder_type == 'gat' else f'predictor_models_{encoder_type}.pth'
+
+
+def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3,
+          device='cpu', min_delta=1e-4, patience=4, transfer_learning_model=None, encoder_type=None):
+    encoder_type = encoder_type or ENCODER_TYPE
+    print(f"Path encoder: {encoder_type}")
     if dataset_path is None:
         dataset_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'predictor_dataset.pt')
         dataset_path = os.path.abspath(dataset_path)
@@ -62,28 +128,27 @@ def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3
     print(f"Baseline (predict-mean) test  = {baselines(test_t, [dataset[-1]], 1, mean_delay.sum(), std_dev_delay_tot, c_delta)}")
 
     TOPO_DIM = 64
-    encoder = HeteroGATv2Encoder(node_in=10, virtual_in=1, hidden_dim=128, out_dim=TOPO_DIM, heads=2, n_layers=3, dropout=0.2).to(device)
-    graph_encoder = GraphEncoder(encoder, device=device)
-
-    # measurement embedder now operates on the concatenated topology embedding
-    fcov = f_cov(h_dim=TOPO_DIM, dropout=0.2).to(device)
-    # Predictor input: h_enc (TOPO_DIM) + g (64) + horizon_m (1)
-    ftopo = f_topo(in_dim=TOPO_DIM, hidden_dim=64, dropout=0.2).to(device)
+    encoder, graph_encoder = build_encoder(encoder_type, TOPO_DIM, device)
+    fcov = f_cov(in_dim=TOPO_DIM, dropout=0.0).to(device)
+    ftopo = f_topo(in_dim=TOPO_DIM, hidden_dim=64, dropout=0.0).to(device)
 
     opt = torch.optim.Adam(list(encoder.parameters()) + list(ftopo.parameters()) + list(fcov.parameters()), lr=lr)
     
     if transfer_learning_model:
         model_path = os.path.join(model_dir, transfer_learning_model)
         ckpt = torch.load(model_path, map_location='cpu', weights_only=False)
-        if 'fcov_state' in ckpt and 'ftopo_state' in ckpt and 'encoder_state' in ckpt:
-            fcov.load_state_dict(ckpt['fcov_state'])
+        if ('fcov_state' in ckpt and 'ftopo_state' in ckpt and 'encoder_state' in ckpt
+                and ckpt.get('encoder_type', 'gat') == encoder_type):
+            #missing_keys, _ = fcov.load_state_dict(ckpt['fcov_state'], strict=False)  # identity weights may be new
+            #if missing_keys:
+            #    print(f"fcov: initialised new parameters {missing_keys}")
             ftopo.load_state_dict(ckpt['ftopo_state'])
             encoder.load_state_dict(ckpt['encoder_state'])
             print(f"Loaded model at {model_path}")
             opt = torch.optim.Adam([
-                {'params': encoder.parameters(), 'lr': lr},   # gentle since the encoder carries mostly topology info already trained
+                {'params': encoder.parameters(), 'lr': 0.0*lr},   # gentle since the encoder carries mostly topology info already trained
                 {'params': fcov.parameters(), 'lr': lr},
-                {'params': ftopo.parameters(), 'lr': lr},
+                {'params': ftopo.parameters(), 'lr': 0.0*lr},
             ])
             #mean_delay, std_dev_delay = ckpt['mean_delay'], ckpt['std_dev_delay']
             #mean_loss, std_dev_loss = ckpt['mean_loss'], ckpt['std_dev_loss']
@@ -93,7 +158,16 @@ def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3
             print(f"Could not load model at {model_path}")
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            opt, mode='min', factor=0.5, patience=2)
+            opt, mode='min', factor=0.5, patience=3)
+
+    R_VAR = 0.0  # measurement-noise variance in normalised delay units (tune / estimate)
+
+    # Observable overlay identity for f_cov: [overlay id, waypoint ids of ovl['overlay_path']]
+    name_vocab, id_vocab = {}, {}
+    def ovl_keys(ovl):
+        wps = [name_vocab.setdefault(nm, len(name_vocab)) for nm in ovl['overlay_path']][:fcov.n_wp]
+        wps += [-1] * (fcov.n_wp - len(wps))
+        return torch.tensor([id_vocab.setdefault(ovl['id'], len(id_vocab))] + wps, dtype=torch.long, device=device)
 
     def run_t(t, gidx, data, return_attention, ep, h_enc, h_topo):
         curr_overlay = data[(gidx,t)]['overlay_paths']
@@ -103,6 +177,7 @@ def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3
         Elapsed = []
         Hist_ids = []
         Topo_hist = []
+        Keys_hist = []
 
         sim_loss = torch.zeros((), device=device)
         sim_count = 0
@@ -129,6 +204,7 @@ def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3
                         
                     Elapsed.append(float(i))
                     Hist_ids.append((ovl['id'], t - i))
+                    Keys_hist.append(ovl_keys(ovl))
 
             if len(H_hist) > 0:  # Can be 0 if there are no overlays at given time
                 H_hist = torch.stack(H_hist)
@@ -139,6 +215,7 @@ def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3
                 ], dim=1)
                 Elapsed = torch.tensor(Elapsed, device=device).unsqueeze(1)
                 Topo_hist = torch.stack(Topo_hist)
+                Keys_hist = torch.stack(Keys_hist)
 
         loss = torch.zeros((), device=device)
         loss_cheating = torch.zeros((), device=device)
@@ -172,40 +249,29 @@ def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3
                     if REMOVE_SELF_MEAS:
                         for d in range(Delta):  #Don't use previous measurements from the same overlay
                             if (f_ovl['id'], t-d) in Hist_ids:
-                                idx = Hist_ids.index((f_ovl['id'], t-d))
-                                mask[idx] = False
+                                if random.random() < REMOVE_SELF_MEAS_PERC:
+                                    idx = Hist_ids.index((f_ovl['id'], t-d))
+                                    mask[idx] = False
 
                     Topo_hist_tmp = Topo_hist[mask]
                     Elapsed_tmp = Elapsed[mask]
                     H_hist_tmp = H_hist[mask]
                     Meas_hist_tmp = Meas_hist[mask]
+                    Keys_hist_tmp = Keys_hist[mask]
 
+                    C = (fcov(H_hist_tmp, Elapsed_tmp + m, keys_hist=Keys_hist_tmp)).reshape(H_hist_tmp.size(0), H_hist_tmp.size(0))
+                    g = (fcov(H_hist_tmp, Elapsed_tmp + m, h_pred=enc,
+                              keys_hist=Keys_hist_tmp, keys_pred=ovl_keys(f_ovl))).reshape(H_hist_tmp.size(0), 1)
+                    hat_z = Meas_hist_tmp[:,0] - Topo_hist_tmp[:,0]  # neighbor deviation
+                    R = R_VAR * torch.eye(H_hist_tmp.size(0), device=device)
 
-                    enc_rep = enc.unsqueeze(0).expand(len(H_hist_tmp), -1)
-                    (s, l) = fcov(enc_rep, H_hist_tmp, Elapsed_tmp + m)
-
-                    d_i0 = tgt[0] - out_topo[0]                        # query deviation
-                    d_j0 = Meas_hist_tmp[:,0] - Topo_hist_tmp[:,0]  # neighbor deviation
-                    resid = d_i0 - d_j0 * s
-                    sim_loss = sim_loss + (resid**2 * torch.exp(l) - l).sum()
-                    sim_count = sim_count + len(H_hist_tmp)
-
-                    w = torch.exp(l)                                    # [N] precision weights
-                    dev_hist = Meas_hist_tmp - Topo_hist_tmp            # [N,2] neighbor deviations (see below)
-                    est = s.unsqueeze(1) * dev_hist                     # [N,2] each neighbor's estimate of d_i
-                    out_meas = (w.unsqueeze(1) * est).sum(0) / (w.sum() + 1e-8)   # [2]
+                    tmp = torch.linalg.cond(C + R)
+                    if tmp > 10**5:
+                        print(f'C+R might be ill-conditioned! Cond = {tmp}')
+                    out_meas = g.T @ torch.linalg.solve(C + R, hat_z)  # [1], delay correction only
+                    out_meas = torch.cat([out_meas, torch.zeros(1, device=device)])  # [2], no correction for loss
                 else:
                     out_meas = torch.zeros((2), dtype=torch.float, device=device)
-
-                cheating = False # Not correctly implemented!!! Issue is that the split supervision is not correct as it assumes zero-mean for node-delays
-                if cheating:
-                    tgt[2] = (tgt[2] - mean_delay[0]) / (std_dev_delay[0] + 1e-8)
-                    tgt[3] = (tgt[3] - mean_delay[1]) / (std_dev_delay[1] + 1e-8)
-                    #print(f'tgt[0]={tgt[0]}, tgt[2]={tgt[2]}, tgt[3]={tgt[3]}')
-                    z2 = out_topo[0] - tgt[2]
-                    z3 = out_meas[0] - tgt[3]
-                    z1 = out_topo[1] + out_meas[1] - tgt[1]
-                    loss_cheating = loss_cheating + (c_delta * (z2 ** 2 + z3 ** 2) + c_lambda * z1 ** 2)
                 
                 out = out_topo + out_meas
                 z0 = out[0] - tgt[0]
@@ -270,6 +336,8 @@ def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3
             if batch_sample >= batch_size:
                 opt.zero_grad()
                 full_loss = loss_batch + beta * (loss_batch_sim + loss_batch_cheating)
+                if GRAD_CLIP is not None:
+                    torch.nn.utils.clip_grad_norm_([p for g in opt.param_groups for p in g['params']], GRAD_CLIP)
                 full_loss.backward()
                 opt.step()
                 batch_sample = 1
@@ -346,13 +414,15 @@ def train(dataset_path=None, model_dir=None, epochs=10, batch_size=16, lr=0.5e-3
         ftopo.load_state_dict(best_state['ftopo_state'])
 
     # Save models
-    torch.save({'encoder_state': encoder.state_dict(), 'fcov_state': fcov.state_dict(),
+    model_path = os.path.join(model_dir, model_filename(encoder_type))
+    torch.save({'encoder_type': encoder_type,
+                'encoder_state': encoder.state_dict(), 'fcov_state': fcov.state_dict(),
                 'ftopo_state': ftopo.state_dict(), 'std_dev_delay_tot': std_dev_delay_tot,
                 'mean_delay': mean_delay, 'mean_loss': mean_loss,
                 'std_dev_delay': std_dev_delay, 'std_dev_loss': std_dev_loss},
-               os.path.join(model_dir, 'predictor_models.pth'))
-    print('Saved trained models to', os.path.join(model_dir, 'predictor_models.pth'))
-    return os.path.join(model_dir, 'predictor_models.pth')
+               model_path)
+    print('Saved trained models to', model_path)
+    return model_path
 
 def calculate_mean_std(train_t, dataset, nbr_sims):
     meas_delay = []

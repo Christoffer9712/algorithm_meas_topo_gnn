@@ -27,12 +27,16 @@ class NodeQueues:
         self,
         graph,
         service_rate_range=(3, 5),      # mu, per node type below
-        base_load_range=(0.25, 0.7),    # mean rho each node sits at
+        base_load_range=(0.25, 0.6),    # mean rho each node sits at
         ou_theta= 0.006,                # mean-reversion rate (1/timescale)
         ou_sigma=0.03,                  # driving noise magnitude
         queue_tau=1.0,                  # queue relaxation time constant
         buffer_size=40.0,               # packets; sets loss curve
-        rho_max=0.985,                  # clamp to keep M/M/1 finite
+        rho_max=0.9,                  # clamp to keep M/M/1 finite
+        rho_min=0.02,                  # lower clamp of the utilisation
+        stationary_init=True,          # start each rho from its stationary distribution
+        burn_in_time=None,             # extra warm-up before t=0 (None -> 2 / ou_theta)
+        burn_in_dt=1.0,                # step used during the warm-up (use the simulation dt)
         seed=0,
     ):
         self.G = graph
@@ -42,6 +46,10 @@ class NodeQueues:
         self.queue_tau = queue_tau
         self.buffer_size = buffer_size
         self.rho_max = rho_max
+        self.rho_min = rho_min
+
+        # Stationary std of the (unclipped) O-U utilisation: sigma / sqrt(2 theta)
+        stat_std = ou_sigma / math.sqrt(2.0 * ou_theta)
 
         # Node-type multipliers: satellites are the scarce, contended resource;
         # gateways less so; the wired target is effectively uncongested.
@@ -53,18 +61,38 @@ class NodeQueues:
         }
 
         for n, d in self.G.nodes(data=True):
-            mult = self.type_mu.get(d["node_type"], 1.0)
-            mu = self.rng.uniform(*service_rate_range) * mult
-            rho0 = self.rng.uniform(*base_load_range)
-
+            #mult = self.type_mu.get(d["node_type"], 1.0)
+            #mu = self.rng.uniform(*service_rate_range) * mult
+            #rho0 = self.rng.uniform(*base_load_range)
+            mu = 4 #!!! OBS !!!
+            rho0 = 0.5 #!!! OBS !!!
             d["service_rate"] = mu
             d["base_rho"] = rho0          # OU mean, in utilisation units
-            d["rho_state"] = rho0         # OU state
-            d["utilisation"] = rho0
-            d["load"] = rho0 * mu         # lambda
-            d["queue_len"] = self._equilibrium_len(rho0)
-            d["queue_delay"] = self._equilibrium_delay(rho0, mu)
+
+            # Initial state: a draw from the stationary distribution N(rho0, sigma^2 / (2 theta))
+            # instead of the mean itself. Starting at the mean gives zero variance at t=0
+            # that only builds up over ~1/(2 theta) steps, so E[queue_delay] (convex in rho)
+            # would drift upwards during the simulation.
+            if stationary_init:
+                rho_init = float(np.clip(rho0 + stat_std * self.rng.standard_normal(),
+                                         self.rho_min, self.rho_max))
+            else:
+                rho_init = rho0
+            d["rho_state"] = rho_init     # OU state
+            d["utilisation"] = rho_init
+            d["load"] = rho_init * mu     # lambda
+            d["queue_len"] = self._equilibrium_len(rho_init)
+            d["queue_delay"] = self._equilibrium_delay(rho_init, mu)
             d["loss"] = self._loss(d["queue_len"])
+
+        # Warm-up: the clamp to [rho_min, rho_max] makes the true stationary distribution
+        # slightly non-Gaussian; running the process for a while before t=0 removes the
+        # remaining mismatch (it decays like exp(-theta * t)).
+        if stationary_init:
+            if burn_in_time is None:
+                burn_in_time = 2.0 / ou_theta
+            for _ in range(int(math.ceil(burn_in_time / burn_in_dt))):
+                self.step(burn_in_dt)
 
     # ------------------------------------------------------------- M/M/1 core
 
@@ -101,15 +129,16 @@ class NodeQueues:
             drift = self.ou_theta * (mean - d["rho_state"]) * dt
             noise = self.ou_sigma * math.sqrt(dt) * self.rng.standard_normal()
             rho = d["rho_state"] + drift + noise
-            rho = float(np.clip(rho, 0.02, self.rho_max))
+            rho = float(np.clip(rho, self.rho_min, self.rho_max))
             d["rho_state"] = rho
             d["utilisation"] = rho
             d["load"] = rho * mu
 
             # --- 2. Queue relaxes toward equilibrium, not instantly ----------
-            target_len = self._equilibrium_len(rho)
-            alpha = 1.0 - math.exp(-dt / self.queue_tau)
-            d["queue_len"] += alpha * (target_len - d["queue_len"])
+            #target_len = self._equilibrium_len(rho)
+            #alpha = 1.0 - math.exp(-dt / self.queue_tau)
+            #d["queue_len"] += alpha * (target_len - d["queue_len"])
+            d["queue_len"] = self._equilibrium_len(rho)
 
             # --- 3. Derived metrics ------------------------------------------
             # Delay from actual occupancy via Little's law: W = L / lambda

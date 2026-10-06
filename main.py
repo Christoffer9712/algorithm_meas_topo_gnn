@@ -26,7 +26,7 @@ if RUN_MODE == 'train_predictor':
     re_calculate_data = False
     if re_calculate_data:
         T = 300
-        seeds = range(0,30)
+        seeds = range(0,10)
         nets = generate_nets(seeds)
         for idx in range(len(nets)):
             print(
